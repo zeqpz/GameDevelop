@@ -27,3 +27,6 @@ Thumbs.db
 # Unity crash dumps
 sysinfo.txt
 crashlytics-build.properties
+
+# IDE solution formats
+*.slnx

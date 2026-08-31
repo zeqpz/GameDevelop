@@ -12,7 +12,7 @@
 // The body's humanized follow of the camera (dead zone + random hesitation)
 // lives in PlayerMotor.AimFollowYaw — the rig just publishes yaw + mode.
 using UnityEngine;
-using UnityEngine.InputSystem;
+using Game.Core;
 using Game.Movement;
 
 namespace Game.CameraSystem
@@ -26,6 +26,10 @@ namespace Game.CameraSystem
         public Camera cam;                // child camera
         public PlayerMotor motor;         // for bob / FOV pace (optional but wanted)
 
+        InputService _inputSvc;
+        InputService InputSvc =>
+            _inputSvc ??= (Services.TryGet(out InputService s) ? s : null);
+
         [Header("Look")]
         public float lookSensitivity = 0.14f;   // deg per mouse px
         public float pitchMinDeg = -75f;
@@ -33,6 +37,7 @@ namespace Game.CameraSystem
 
         [Header("Framing")]
         public float pivotHeight = 1.55f;
+        public float crouchPivotHeight = 1.0f;
         public float freeDistance = 5.5f;
         public Vector3 shoulderOffset = new Vector3(0.55f, 0.15f, -2.4f);
         public float collisionRadius = 0.25f;
@@ -47,10 +52,10 @@ namespace Game.CameraSystem
         public float collisionRelaxResponse = 6f;
 
         [Header("Head bob")]
-        public float bobWalkHz = 1.7f;
-        public float bobSprintHz = 2.6f;
-        public float bobVertAmp = 0.035f;
-        public float bobSideAmp = 0.022f;
+        public float bobWalkHz = 1.25f;
+        public float bobSprintHz = 2.0f;
+        public float bobVertAmp = 0.02f;
+        public float bobSideAmp = 0.016f;
         public float bobFirstPersonMult = 1.5f;
 
         [Header("Flick tilt")]
@@ -102,22 +107,22 @@ namespace Game.CameraSystem
 
         void Update()
         {
-            var kb = Keyboard.current;
-            var mouse = Mouse.current;
-            if (kb != null && kb.leftAltKey.wasPressedThisFrame)
+            var input = InputSvc;
+            if (input == null) return;
+            if (input.CameraCyclePressed)
                 SetMode((CameraMode)(((int)Mode + 1) % 3));
-            if (kb != null && kb.escapeKey.wasPressedThisFrame)
+            if (input.EscapePressed && !input.GameplayBlocked)   // UI owns Esc while open
             {
                 bool locked = Cursor.lockState == CursorLockMode.Locked;
                 Cursor.lockState = locked ? CursorLockMode.None : CursorLockMode.Locked;
                 Cursor.visible = locked;
             }
 
-            AimHeld = mouse != null && mouse.rightButton.isPressed;
+            AimHeld = input.AimHeld;
 
-            if (mouse != null && Cursor.lockState == CursorLockMode.Locked)
+            if (Cursor.lockState == CursorLockMode.Locked)
             {
-                Vector2 delta = mouse.delta.ReadValue();
+                Vector2 delta = input.LookDelta;
                 _yaw += delta.x * lookSensitivity;
                 _pitch = Mathf.Clamp(_pitch - delta.y * lookSensitivity, pitchMinDeg, pitchMaxDeg);
             }
@@ -139,7 +144,10 @@ namespace Game.CameraSystem
             Quaternion look = Quaternion.Euler(_pitch, _yaw, _roll);
 
             // ── Smoothed pivot (the camera breathes behind the player) ─────
-            Vector3 pivotTarget = target.position + Vector3.up * pivotHeight;
+            float pivotH = motor != null
+                ? Mathf.Lerp(pivotHeight, crouchPivotHeight, motor.CrouchT)
+                : pivotHeight;
+            Vector3 pivotTarget = target.position + Vector3.up * pivotH;
             if (!_pivotInit) { _pivotPos = pivotTarget; _pivotInit = true; }
             _pivotPos = Vector3.SmoothDamp(_pivotPos, pivotTarget, ref _pivotVel, pivotSmoothTime);
 
@@ -176,7 +184,7 @@ namespace Game.CameraSystem
             // ── Head bob: stride-frequency sway, pace-scaled, speed-faded ──
             float pace = motor != null ? motor.PaceFrac : 0f;
             bool stepping = motor != null && motor.IsGrounded && motor.CurrentSpeed > 0.3f;
-            _bobAmp = Mathf.Lerp(_bobAmp, stepping ? pace : 0f, 1f - Mathf.Exp(-dt * 6f));
+            _bobAmp = Mathf.Lerp(_bobAmp, stepping ? pace : 0f, 1f - Mathf.Exp(-dt * 4.5f));
             if (_bobAmp > 0.01f)
             {
                 _bobClock += dt * Mathf.Lerp(bobWalkHz, bobSprintHz, pace) * Mathf.PI * 2f;
@@ -203,6 +211,18 @@ namespace Game.CameraSystem
             CameraMode.FirstPerson => Vector3.zero,
             _ => new Vector3(0f, 0f, -freeDistance),
         };
+
+        // The player's visual hierarchy can change after Start (the animated
+        // character spawns in) — re-cache so first-person hiding covers every
+        // renderer.
+        public void RefreshTargetRenderers()
+        {
+            if (target == null) return;
+            _targetRenderers = target.GetComponentsInChildren<Renderer>(true);
+            bool show = Mode != CameraMode.FirstPerson;
+            foreach (var r in _targetRenderers)
+                if (r != null) r.enabled = show;
+        }
 
         void SetMode(CameraMode mode)
         {

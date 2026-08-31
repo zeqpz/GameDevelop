@@ -11,6 +11,9 @@ using UnityEngine;
 using Game.Movement;
 using Game.CameraSystem;
 using Game.Data;
+using Game.Interaction;
+using Game.Audio;
+using Game.Inventory;
 
 namespace Game.Core
 {
@@ -32,6 +35,11 @@ namespace Game.Core
             if (templateCam != null && !templateCam.transform.root.name.Equals(RootName))
                 templateCam.gameObject.SetActive(false);
 
+            // ── Services FIRST (composition root: input, events, interaction)
+            var servicesGo = new GameObject("Services");
+            servicesGo.transform.SetParent(root.transform);
+            servicesGo.AddComponent<ServiceHost>();
+
             // ── Baseplate world ────────────────────────────────────────────
             var baseplate = GameObject.CreatePrimitive(PrimitiveType.Plane);
             baseplate.name = "Baseplate";
@@ -47,9 +55,35 @@ namespace Game.Core
                     new Vector3(-6f - i * 2.2f, 0.6f, 4f + (i % 2) * 3f),
                     Vector3.one * 1.2f, Quaternion.Euler(0f, i * 25f, 0f),
                     new Color(0.50f, 0.42f, 0.32f));
+
+            // Crate1 proves the pipeline end to end: prompt → E → Interactable
+            // event (tint flip + scrap loot) → EventBus log → inventory dump.
+            var pokeCrate = root.transform.Find("Crate1").gameObject;
+            var poke = pokeCrate.AddComponent<Interactable>();
+            poke.prompt = "Search crate";
+            bool flipped = false;
+            poke.Interacted += _ =>
+            {
+                flipped = !flipped;
+                Tint(pokeCrate, flipped
+                    ? new Color(0.75f, 0.55f, 0.30f)
+                    : new Color(0.50f, 0.42f, 0.32f));
+                if (Services.TryGet(out InventoryService inv))
+                    inv.GrantPlayer("scrap_metal", 1);
+            };
             MakeBox(root.transform, "Wall", new Vector3(0f, 1.5f, 14f),
                 new Vector3(10f, 3f, 0.4f), Quaternion.identity,
                 new Color(0.60f, 0.60f, 0.62f));
+
+            // Footstep voices (FootstepEmitter raycasts for these tags).
+            baseplate.AddComponent<FootstepSurface>().surface = SurfaceType.Grass;
+            root.transform.Find("Ramp").gameObject
+                .AddComponent<FootstepSurface>().surface = SurfaceType.Concrete;
+            root.transform.Find("Wall").gameObject
+                .AddComponent<FootstepSurface>().surface = SurfaceType.Concrete;
+            for (int i = 1; i <= 4; i++)
+                root.transform.Find($"Crate{i}").gameObject
+                    .AddComponent<FootstepSurface>().surface = SurfaceType.Wood;
 
             // ── Player (kinematic capsule + PlayerMotor) ───────────────────
             var player = new GameObject("Player");
@@ -78,6 +112,9 @@ namespace Game.Core
 
             var motor = player.AddComponent<PlayerMotor>();
             motor.settings = settings;
+            player.AddComponent<PlayerAnimator>();   // X Bot + locomotion blends (capsule fallback)
+            if (Application.isPlaying && Services.TryGet(out InteractionService interaction))
+                interaction.User = player.transform; // menu-built worlds self-heal in Tick
 
             // ── Camera rig ─────────────────────────────────────────────────
             var rigGo = new GameObject("CameraRig");
@@ -107,7 +144,7 @@ namespace Game.Core
             }
 
             Debug.Log("[WorldBuilder] World ready — WASD move · Shift sprint · Space jump · " +
-                "RMB aim-strafe · Alt camera mode · Esc cursor");
+                "Ctrl crouch · E interact · RMB aim-strafe · Alt camera mode · Esc cursor");
             return root;
         }
 

@@ -15,11 +15,14 @@
 //     body tracks camera yaw instead and A/D become sidesteps.
 //   • JUMP/LANDING: reduced jump, air-speed multiplier, landing stagger after
 //     real drops only.
+//   • CROUCH: Ctrl toggles the stance — capsule shrinks (feet pinned), speed
+//     halves, sprint disarms; Space or Ctrl stands up (clearance-checked).
+//   • BACKPEDAL: target speed falls away as travel points behind the body —
+//     walking or running backwards is far slower than forwards.
 //
 // Physics stance matches the Roblox build: KINEMATIC. A CharacterController
 // capsule we drive explicitly — no rigidbody forces steering the player.
 using UnityEngine;
-using UnityEngine.InputSystem;
 using Game.Core;
 using Game.CameraSystem;
 
@@ -31,10 +34,18 @@ namespace Game.Movement
         public MovementSettings settings;
         public CameraRig cameraRig;
 
+        InputService _inputSvc;
+        InputService InputSvc =>
+            _inputSvc ??= (Services.TryGet(out InputService s) ? s : null);
+
         public float CurrentSpeed => _speed;
         public float SprintT => _sprintT;
         public Vector3 Momentum => _momentum;
         public bool IsGrounded => _grounded;
+        public bool IsCrouched => _crouched;
+        public float CrouchT => _crouchT;
+        // Systems (carry weight, status effects…) scale target speed here.
+        public float ExternalSpeedMult { get; set; } = 1f;
         public float PaceFrac => settings != null
             ? Mathf.Clamp01(_speed / settings.sprintSpeed) : 0f;
 
@@ -50,6 +61,10 @@ namespace Game.Movement
         float _landTimer;
         float _airborneSince = -1f;
         bool _grounded;
+        bool _crouched;
+        float _crouchT;              // 0..1 smoothed stance blend
+        float _standHeight;
+        float _standCenterY;
 
         // Over-shoulder body-follow state machine (idle → hesitating → following)
         enum AimFollow { Idle, Hesitating, Following }
@@ -60,6 +75,8 @@ namespace Game.Movement
         void Awake()
         {
             _cc = GetComponent<CharacterController>();
+            _standHeight = _cc.height;
+            _standCenterY = _cc.center.y;
             if (settings == null)
                 Debug.LogError("[PlayerMotor] No MovementSettings assigned.");
             _wanderClock = Random.value * 10f;
@@ -70,19 +87,11 @@ namespace Game.Movement
             if (settings == null) return;
             float dt = Time.deltaTime;
 
-            // ── Raw input (camera-relative, like Roblox MoveDirection) ─────
-            var kb = Keyboard.current;
-            Vector2 wasd = Vector2.zero;
-            bool wantSprint = false, wantJump = false;
-            if (kb != null)
-            {
-                if (kb.wKey.isPressed) wasd.y += 1f;
-                if (kb.sKey.isPressed) wasd.y -= 1f;
-                if (kb.dKey.isPressed) wasd.x += 1f;
-                if (kb.aKey.isPressed) wasd.x -= 1f;
-                wantSprint = kb.leftShiftKey.isPressed;
-                wantJump = kb.spaceKey.wasPressedThisFrame;
-            }
+            // ── Raw input (InputService; camera-relative like Roblox) ──────
+            var input = InputSvc;
+            Vector2 wasd = input != null ? input.Move : Vector2.zero;
+            bool wantSprint = input != null && input.SprintHeld;
+            bool wantJump = input != null && input.JumpPressed;
             Vector3 inputDir = Vector3.zero;
             if (wasd.sqrMagnitude > 0.01f)
             {
@@ -90,6 +99,26 @@ namespace Game.Movement
                 inputDir = (camYaw * new Vector3(wasd.x, 0f, wasd.y)).normalized;
             }
             bool hasInput = inputDir.sqrMagnitude > 0.01f;
+
+            // ── Crouch stance (Ctrl toggles; Space stands up instead of jumping)
+            bool toggleCrouch = input != null && input.CrouchPressed;
+            if (toggleCrouch && _grounded)
+            {
+                if (!_crouched) _crouched = true;
+                else if (CanStand()) _crouched = false;
+            }
+            if (wantJump && _crouched)
+            {
+                if (CanStand()) _crouched = false;
+                wantJump = false;
+            }
+            _crouchT = Mathf.Lerp(_crouchT, _crouched ? 1f : 0f,
+                1f - Mathf.Exp(-dt * settings.crouchResponse));
+            if (_crouchT < 0.001f) _crouchT = 0f;
+            float capsuleH = Mathf.Lerp(_standHeight, settings.crouchHeight, _crouchT);
+            _cc.height = capsuleH;
+            _cc.center = new Vector3(0f,
+                _standCenterY - (_standHeight - capsuleH) * 0.5f, 0f); // feet stay put
 
             // ── Turn penalty (sharp flicks scrub speed) ────────────────────
             if (hasInput && _prevInputDir.sqrMagnitude > 0.01f)
@@ -106,7 +135,7 @@ namespace Game.Movement
             _turnPenalty = Mathf.Max(0f, _turnPenalty - dt * settings.turnPenaltyDecay);
 
             // ── Sprint ramp ────────────────────────────────────────────────
-            bool sprinting = wantSprint && hasInput && _grounded;
+            bool sprinting = wantSprint && hasInput && _grounded && !_crouched;
             _sprintT = Mathf.Clamp01(_sprintT + (sprinting
                 ? dt / settings.sprintRampTime
                 : -dt / settings.sprintDownTime));
@@ -143,6 +172,17 @@ namespace Game.Movement
                 {
                     float t = 1f - Mathf.Clamp01(_landTimer / settings.landPenaltyTime);
                     baseTarget *= Mathf.Lerp(settings.landPenaltyStart, 1f, t);
+                }
+                baseTarget *= ExternalSpeedMult;
+                baseTarget *= Mathf.Lerp(1f, settings.crouchSpeedMult, _crouchT);
+                // Backpedal honesty: speed falls away the further travel
+                // points behind the body (aim-mode backpedal; free-look
+                // pivots dip through it, deepening the pivot beat).
+                if (_momentum.sqrMagnitude > 0.01f)
+                {
+                    float back = Mathf.Clamp01(
+                        -Vector3.Dot(_momentum.normalized, transform.forward));
+                    baseTarget *= Mathf.Lerp(1f, settings.backwardSpeedMult, back);
                 }
                 if (!hasInput) baseTarget = 0f; // gliding: momentum carries, speed bleeds
             }
@@ -192,6 +232,19 @@ namespace Game.Movement
             }
 
             UpdateBodyYaw(dt, paceFrac);
+        }
+
+        // Headroom check before standing from crouch: cast the capsule's top
+        // sphere upward by the missing height (casts skip colliders they
+        // start overlapped with, so our own capsule never blocks it).
+        bool CanStand()
+        {
+            float need = _standHeight - _cc.height;
+            if (need <= 0.01f) return true;
+            Vector3 top = transform.position + transform.rotation
+                * (_cc.center + Vector3.up * (_cc.height * 0.5f - _cc.radius));
+            return !Physics.SphereCast(top, _cc.radius * 0.95f, Vector3.up, out _,
+                need + 0.05f, ~0, QueryTriggerInteraction.Ignore);
         }
 
         // Delayed body turn: toward TRAVEL in free-look, toward CAMERA when

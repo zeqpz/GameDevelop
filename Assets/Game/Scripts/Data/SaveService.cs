@@ -5,25 +5,45 @@
 // thing the rest of the game codes against, so swapping the backend for
 // UGS Cloud Save / PlayFab later touches ONLY this file.
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
 namespace Game.Data
 {
+    // One saved item pile — flat on purpose (JsonUtility can't recurse):
+    // container contents point at their holder via `parent` (list index),
+    // and writers guarantee parents appear before children.
+    [Serializable]
+    public class SavedStack
+    {
+        public string defId;
+        public int count = 1;
+        public bool rotated;
+        public int x = -1, y = -1;   // grid origin (in whichever grid holds it)
+        public int slot = -1;        // equip slot (EquipSlot int), -1 = not equipped
+        public int parent = -1;      // index of the container stack holding this, -1 = root
+    }
+
     [Serializable]
     public class PlayerProfile
     {
-        public int version = 1;      // bump + migrate in SaveService.Migrate
+        public int version = 2;      // bump + migrate in SaveService.Migrate
         public float cash = 500f;    // Roblox starter economy parity
         public float bank = 2500f;
         public float posX, posY, posZ;
         public bool hasPosition;
+        public bool hasInventory;    // false = grant the starter kit
+        public List<SavedStack> inventory = new List<SavedStack>();
     }
 
     public class SaveService : MonoBehaviour
     {
         public static SaveService Instance { get; private set; }
         public static PlayerProfile Profile => Instance != null ? Instance._profile : null;
+
+        // Systems stamp their state into the profile here right before disk.
+        public static event Action<PlayerProfile> OnBeforeSave;
 
         [Tooltip("Seconds between autosaves (Roblox ProfileService cadence)")]
         public float autosaveInterval = 30f;
@@ -81,6 +101,7 @@ namespace Game.Data
         {
             try
             {
+                OnBeforeSave?.Invoke(_profile);
                 if (trackPlayer != null)
                 {
                     Vector3 p = trackPlayer.position;
@@ -99,6 +120,12 @@ namespace Game.Data
         static void Migrate(PlayerProfile p)
         {
             if (p.version < 1) p.version = 1;
+            if (p.version < 2)
+            {
+                // v2: inventory persistence (hasInventory=false grants starter kit)
+                p.inventory ??= new List<SavedStack>();
+                p.version = 2;
+            }
         }
     }
 }

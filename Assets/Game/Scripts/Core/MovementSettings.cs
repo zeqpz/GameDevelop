@@ -73,5 +73,21 @@ namespace Game.Core
         public float landPenaltyTime = 1.0f;
         [Tooltip("Seconds airborne before a landing counts (stairs don't stagger)")]
         public float landMinAirtime = 0.18f;
+
+        [Header("Backpedal — backwards is far slower than forwards")]
+        [Tooltip("Speed multiplier moving straight backward (blends by angle)")]
+        public float backwardSpeedMult = 0.45f;
+
+        [Header("Crouch — Ctrl toggles (Roblox stance-system port, crouch only)")]
+        public float crouchSpeedMult = 0.5f;
+        [Tooltip("Capsule height while crouched (standing 1.8)")]
+        public float crouchHeight = 1.2f;
+        [Tooltip("Stance blend response (per second)")]
+        public float crouchResponse = 9f;
+
+        [Header("Carry weight — Roblox item-weight system (lbs)")]
+        public float maxCarryLbs = 80f;
+        [Tooltip("Speed multiplier at/over max carry (eases in from 40% load)")]
+        public float overweightSpeedMult = 0.6f;
     }
 }
