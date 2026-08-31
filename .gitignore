@@ -1,0 +1,29 @@
+# Unity — only Assets/, Packages/, ProjectSettings/ belong in the repo.
+# Everything below is machine-local and regenerates on open.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# IDE / OS noise
+.vs/
+.idea/
+.vscode/
+*.csproj
+*.sln
+*.user
+*.pidb
+*.booproj
+*.svd
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Unity crash dumps
+sysinfo.txt
+crashlytics-build.properties
