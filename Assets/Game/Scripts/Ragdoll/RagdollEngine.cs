@@ -48,6 +48,14 @@ namespace Game.Ragdoll
         const float SelfCollideStiff = 0.5f;
         const int SolveIterations = 4;
         public const float FixedStep = 1f / 60f;
+        // Anti-jitter contact model (standard Verlet practice: never project
+        // 100% of penetration — partial bias + a permitted slop stops the
+        // snap-out/sink-in oscillation that reads as ground shiver).
+        const float ContactSlop = 0.008f;
+        const float ContactBias = 0.85f;
+        // Knockdown impulses arrive 80% weaker (user tune) — one choke point
+        // so every source (shots, falls, X debug) scales together.
+        public const float ImpulseScale = 0.2f;
 
         public class Particle
         {
@@ -179,6 +187,7 @@ namespace Game.Ragdoll
         // applyImpulse: contact falloff + up-bias. Hit legs → the body flips.
         public void ApplyImpulse(Vector3 point, Vector3 dir, float speed)
         {
+            speed *= ImpulseScale;
             dir = dir.sqrMagnitude > 0.001f ? dir.normalized : Vector3.forward;
             foreach (var p in Particles)
             {
@@ -223,7 +232,11 @@ namespace Game.Ragdoll
                 float damp = AirDamp;
                 if (p.Grounded && p.V0.magnitude < GroundDampSpeedGate)
                     damp = GroundBodyDamp;      // slow grounded bodies bleed out
-                Vector3 next = p.Pos + p.V0 * damp * dt + Vector3.down * Gravity * dt * dt;
+                // Resting particles get NO gravity — a grounded, near-still
+                // particle otherwise sinks and pops every step forever.
+                bool resting = p.Grounded && p.V0.magnitude < JitterEps;
+                Vector3 g = resting ? Vector3.zero : Vector3.down * (Gravity * dt * dt);
+                Vector3 next = p.Pos + p.V0 * damp * dt + g;
                 p.Prev = p.Pos;
                 p.Pos = next;
             }
@@ -301,11 +314,13 @@ namespace Game.Ragdoll
                         mLen + p.Radius, ~0, QueryTriggerInteraction.Ignore))
                     contact = true;
                 else if (Physics.Raycast(p.Pos + Vector3.up * 0.01f, Vector3.down, out hit,
-                        p.Radius + 0.01f, ~0, QueryTriggerInteraction.Ignore))
-                    contact = true;
+                        p.Radius + 0.03f, ~0, QueryTriggerInteraction.Ignore))
+                    contact = true;   // reach past the slop: contact hysteresis
 
                 if (!contact) continue;
-                p.Pos = hit.point + hit.normal * p.Radius;
+                float pen = p.Radius - Vector3.Dot(p.Pos - hit.point, hit.normal);
+                if (pen > ContactSlop)
+                    p.Pos += hit.normal * ((pen - ContactSlop) * ContactBias);
                 p.Grounded = true;
                 if (p.Core) coreDown = true;
 
@@ -332,8 +347,9 @@ namespace Game.Ragdoll
                         out RaycastHit hit, p.Radius + 0.05f, ~0,
                         QueryTriggerInteraction.Ignore))
                 {
-                    Vector3 target = hit.point + hit.normal * p.Radius;
-                    if (p.Pos.y < target.y) p.Pos = new Vector3(p.Pos.x, target.y, p.Pos.z);
+                    float pen = p.Radius - Vector3.Dot(p.Pos - hit.point, hit.normal);
+                    if (pen > ContactSlop)
+                        p.Pos += hit.normal * ((pen - ContactSlop) * ContactBias);
                 }
             }
 
@@ -351,6 +367,12 @@ namespace Game.Ragdoll
                     p.Prev = p.Pos;
             }
             avgMotion /= Mathf.Max(1, Particles.Count);
+
+            // WHOLE-BODY sleep: per-particle sleep alone lets the sticks wake
+            // neighbours in a loop. Once the body as a whole is quiet on its
+            // core, every particle's velocity dies together.
+            if (coreDown && avgMotion < JitterEps)
+                foreach (var p in Particles) p.Prev = p.Pos;
 
             // ── Settle / freeze (CORE contact required — never lock
             // standing; skipped while muscles are actively getting up).
