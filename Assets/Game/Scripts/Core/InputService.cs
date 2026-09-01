@@ -20,8 +20,8 @@ namespace Game.Core
         readonly InputActionMap _system = new InputActionMap("System");
         readonly InputActionMap _ui = new InputActionMap("Ui");
         readonly InputAction _move, _look, _sprint, _jump, _crouch, _aim,
-            _interact, _cameraMode, _escape;
-        readonly InputAction _uiPoint, _uiClick, _uiRight, _uiRotate, _uiInventory;
+            _interact, _cameraMode, _escape, _fire, _ready, _reload, _ragTest;
+        readonly InputAction _uiPoint, _uiClick, _uiRight, _uiRotate, _uiInventory, _uiStats;
 
         public bool GameplayBlocked { get; private set; }
 
@@ -38,12 +38,17 @@ namespace Game.Core
             _aim = _gameplay.AddAction("Aim", InputActionType.Button, "<Mouse>/rightButton");
             _interact = _gameplay.AddAction("Interact", InputActionType.Button, "<Keyboard>/e");
             _cameraMode = _gameplay.AddAction("CameraMode", InputActionType.Button, "<Keyboard>/leftAlt");
+            _fire = _gameplay.AddAction("Fire", InputActionType.Button, "<Mouse>/leftButton");
+            _ready = _gameplay.AddAction("GunReady", InputActionType.Button, "<Keyboard>/t");
+            _reload = _gameplay.AddAction("Reload", InputActionType.Button, "<Keyboard>/r");
+            _ragTest = _gameplay.AddAction("RagdollTest", InputActionType.Button, "<Keyboard>/x");
             _escape = _system.AddAction("Escape", InputActionType.Button, "<Keyboard>/escape");
             _uiPoint = _ui.AddAction("Point", InputActionType.Value, "<Mouse>/position");
             _uiClick = _ui.AddAction("Click", InputActionType.Button, "<Mouse>/leftButton");
             _uiRight = _ui.AddAction("RightClick", InputActionType.Button, "<Mouse>/rightButton");
             _uiRotate = _ui.AddAction("Rotate", InputActionType.Button, "<Keyboard>/r");
             _uiInventory = _ui.AddAction("Inventory", InputActionType.Button, "<Keyboard>/tab");
+            _uiStats = _ui.AddAction("Stats", InputActionType.Button, "<Keyboard>/p");
             _gameplay.Enable();
             _system.Enable();
             _ui.Enable();
@@ -55,6 +60,11 @@ namespace Game.Core
         public bool JumpPressed => _jump.WasPressedThisFrame();
         public bool CrouchPressed => _crouch.WasPressedThisFrame();
         public bool AimHeld => _aim.IsPressed();
+        public bool FirePressed => _fire.WasPressedThisFrame();
+        public bool FireHeld => _fire.IsPressed();
+        public bool ReadyPressed => _ready.WasPressedThisFrame();
+        public bool ReloadPressed => _reload.WasPressedThisFrame();
+        public bool RagdollTestPressed => _ragTest.WasPressedThisFrame();
         public bool InteractPressed => _interact.WasPressedThisFrame();
         public bool CameraCyclePressed => _cameraMode.WasPressedThisFrame();
         public bool EscapePressed => _escape.WasPressedThisFrame();
@@ -66,6 +76,7 @@ namespace Game.Core
         public bool UiRightPressed => _uiRight.WasPressedThisFrame();
         public bool UiRotatePressed => _uiRotate.WasPressedThisFrame();
         public bool InventoryTogglePressed => _uiInventory.WasPressedThisFrame();
+        public bool StatsTogglePressed => _uiStats.WasPressedThisFrame();
 
         // The typing gate: UI/chat blocks gameplay wholesale, escape survives.
         public void SetGameplayBlocked(bool blocked)

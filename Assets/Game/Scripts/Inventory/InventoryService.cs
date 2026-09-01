@@ -23,13 +23,11 @@ namespace Game.Inventory
 
         public InventoryService()
         {
-            EventBus.Subscribe<InventoryChanged>(OnChanged);
             SaveService.OnBeforeSave += WriteProfile;
         }
 
         public void Shutdown()
         {
-            EventBus.Unsubscribe<InventoryChanged>(OnChanged);
             SaveService.OnBeforeSave -= WriteProfile;
         }
 
@@ -37,10 +35,7 @@ namespace Game.Inventory
         {
             if (!_loaded && SaveService.Profile != null) LoadFromProfile();
             if (_motor == null)
-            {
-                _motor = Object.FindAnyObjectByType<PlayerMotor>();
-                if (_motor != null) ApplyCarryWeight();
-            }
+                _motor = Object.FindAnyObjectByType<PlayerMotor>();   // DumpToLog only
         }
 
         public bool GrantPlayer(string defId, int count = 1)
@@ -59,19 +54,8 @@ namespace Game.Inventory
             return added > 0;
         }
 
-        void OnChanged(InventoryChanged e)
-        {
-            if (e.Owner == Player.OwnerId) ApplyCarryWeight();
-        }
-
-        void ApplyCarryWeight()
-        {
-            if (_motor == null || _motor.settings == null) return;
-            var s = _motor.settings;
-            float w = Player.TotalWeightLbs;
-            float t = Mathf.InverseLerp(s.maxCarryLbs * 0.4f, s.maxCarryLbs, w);
-            _motor.ExternalSpeedMult = Mathf.Lerp(1f, s.overweightSpeedMult, Mathf.Clamp01(t));
-        }
+        // Carry-speed math moved to StatsService: it applies the shared
+        // LoadConfig curve (weight + Strength) to the motor every tick.
 
         void LoadFromProfile()
         {
@@ -79,7 +63,7 @@ namespace Game.Inventory
             var profile = SaveService.Profile;
             if (profile.hasInventory) Player.FromSave(profile.inventory);
             else GrantStarterKit();
-            ApplyCarryWeight();
+            EnsureSidearm();
             DumpToLog();
         }
 
@@ -90,6 +74,7 @@ namespace Game.Inventory
             Player.TryAdd("tshirt", 1);
             Player.TryEquip(Player.FindFirst("tshirt"));
             Player.TryAdd("pistol", 1);
+            Player.TryEquip(Player.FindFirst("pistol"));   // in-grid Hand equip: T works day one
             Player.TryAdd("rice_bag", 3);
             Player.TryAdd("scrap_metal", 2);
 
@@ -99,6 +84,18 @@ namespace Game.Inventory
             pack?.Container?.TryAdd(ItemCatalog.Get("water_bottle"), 2);
             Player.NotifyChanged();
             Debug.Log("[Inventory] Starter kit granted");
+        }
+
+        // Idempotent spawn guarantee (the Roblox EnsureCreationClothing
+        // pattern): every load makes sure the slice's sidearm exists; a
+        // fresh grant arrives equipped so T works immediately. An existing
+        // unequipped pistol is left as the player arranged it.
+        void EnsureSidearm()
+        {
+            if (Player.FindFirst("pistol") != null) return;   // grid-kept equips included
+            if (Player.TryAdd("pistol", 1) == 0) return;      // grid jammed: skip quietly
+            Player.TryEquip(Player.FindFirst("pistol"));
+            Debug.Log("[Inventory] Sidearm granted + equipped");
         }
 
         void WriteProfile(PlayerProfile profile)

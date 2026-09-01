@@ -25,16 +25,29 @@ namespace Game.Data
         public int parent = -1;      // index of the container stack holding this, -1 = root
     }
 
+    // Skills + XP accumulators + vitals (StatsService owns the live copy).
+    [Serializable]
+    public class SavedStats
+    {
+        public float strength, agility, accuracy, intelligence, reputation;
+        public float sprintXp, gunXp, strengthXp;
+        public float hunger = 100f, thirst = 100f, stamina = 100f;
+    }
+
     [Serializable]
     public class PlayerProfile
     {
-        public int version = 2;      // bump + migrate in SaveService.Migrate
+        public int version = 4;      // bump + migrate in SaveService.Migrate
         public float cash = 500f;    // Roblox starter economy parity
         public float bank = 2500f;
         public float posX, posY, posZ;
         public bool hasPosition;
         public bool hasInventory;    // false = grant the starter kit
         public List<SavedStack> inventory = new List<SavedStack>();
+        public bool hasStats;        // false = fresh skills/vitals
+        public SavedStats stats = new SavedStats();
+        public bool hasTime;         // false = world starts at day one, 6 AM
+        public double gameTimeSecs;  // elapsed game-seconds (TimeService)
     }
 
     public class SaveService : MonoBehaviour
@@ -125,6 +138,17 @@ namespace Game.Data
                 // v2: inventory persistence (hasInventory=false grants starter kit)
                 p.inventory ??= new List<SavedStack>();
                 p.version = 2;
+            }
+            if (p.version < 3)
+            {
+                // v3: skills + vitals (hasStats=false starts fresh at defaults)
+                p.stats ??= new SavedStats();
+                p.version = 3;
+            }
+            if (p.version < 4)
+            {
+                // v4: persistent world clock (hasTime=false = day one, 6 AM)
+                p.version = 4;
             }
         }
     }

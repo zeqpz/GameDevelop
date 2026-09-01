@@ -85,9 +85,7 @@ namespace Game.Core
         [Tooltip("Stance blend response (per second)")]
         public float crouchResponse = 9f;
 
-        [Header("Carry weight — Roblox item-weight system (lbs)")]
-        public float maxCarryLbs = 80f;
-        [Tooltip("Speed multiplier at/over max carry (eases in from 40% load)")]
-        public float overweightSpeedMult = 0.6f;
+        // Carry-weight speed/stamina penalties live in Stats/LoadConfig (the
+        // shared Roblox LoadConfig curve, Strength-eased) — not here.
     }
 }

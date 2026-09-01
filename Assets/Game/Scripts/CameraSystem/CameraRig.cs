@@ -40,6 +40,8 @@ namespace Game.CameraSystem
         public float crouchPivotHeight = 1.0f;
         public float freeDistance = 5.5f;
         public Vector3 shoulderOffset = new Vector3(0.55f, 0.15f, -2.4f);
+        [Tooltip("Shoulder boom while ADS — the AIM_ZOOM pull-in")]
+        public Vector3 adsShoulderOffset = new Vector3(0.5f, 0.12f, -1.6f);
         public float collisionRadius = 0.25f;
         public LayerMask collisionMask = ~0;
 
@@ -80,6 +82,11 @@ namespace Game.CameraSystem
         float _prevYaw;
         float _yawVelSmooth;      // deg/sec, smoothed — drives the flick roll
         float _roll;
+        float _recoilPitch;
+        float _recoilYaw;
+        bool _gunUp;
+        bool _gunAiming;
+        CameraMode _preGunMode = CameraMode.Free;
         Vector3 _pivotPos;
         Vector3 _pivotVel;
         bool _pivotInit;
@@ -110,7 +117,12 @@ namespace Game.CameraSystem
             var input = InputSvc;
             if (input == null) return;
             if (input.CameraCyclePressed)
-                SetMode((CameraMode)(((int)Mode + 1) % 3));
+            {
+                var next = (CameraMode)(((int)Mode + 1) % 3);
+                if (_gunUp && next == CameraMode.Free)   // gun up: Shoulder ↔ FP only
+                    next = (CameraMode)(((int)next + 1) % 3);
+                SetMode(next);
+            }
             if (input.EscapePressed && !input.GameplayBlocked)   // UI owns Esc while open
             {
                 bool locked = Cursor.lockState == CursorLockMode.Locked;
@@ -141,7 +153,9 @@ namespace Game.CameraSystem
             float targetRoll = Mathf.Clamp(-_yawVelSmooth * tiltPerYawRate, -tiltMaxDeg, tiltMaxDeg);
             _roll = Mathf.Lerp(_roll, targetRoll, 1f - Mathf.Exp(-dt * tiltResponse));
 
-            Quaternion look = Quaternion.Euler(_pitch, _yaw, _roll);
+            _recoilPitch = Mathf.Lerp(_recoilPitch, 0f, 1f - Mathf.Exp(-dt * 9f));
+            _recoilYaw = Mathf.Lerp(_recoilYaw, 0f, 1f - Mathf.Exp(-dt * 9f));
+            Quaternion look = Quaternion.Euler(_pitch - _recoilPitch, _yaw + _recoilYaw, _roll);
 
             // ── Smoothed pivot (the camera breathes behind the player) ─────
             float pivotH = motor != null
@@ -207,10 +221,41 @@ namespace Game.CameraSystem
 
         Vector3 OffsetForMode(CameraMode mode) => mode switch
         {
-            CameraMode.Shoulder => shoulderOffset,
+            CameraMode.Shoulder => _gunAiming ? adsShoulderOffset : shoulderOffset,
             CameraMode.FirstPerson => Vector3.zero,
             _ => new Vector3(0f, 0f, -freeDistance),
         };
+
+        // Roblox CameraAim contract: raising the gun ("ready") locks the
+        // shoulder frame — remember where the player was, force Shoulder;
+        // lowering restores Free only if they didn't re-frame while up.
+        // ADS ("aim") pulls the boom to adsShoulderOffset via the usual
+        // mode-blend tween.
+        public void SetGunUp(bool up)
+        {
+            if (up == _gunUp) return;
+            _gunUp = up;
+            if (up)
+            {
+                _preGunMode = Mode;
+                if (Mode == CameraMode.Free) SetMode(CameraMode.Shoulder);
+            }
+            else
+            {
+                _gunAiming = false;
+                if (Mode == CameraMode.Shoulder && _preGunMode == CameraMode.Free)
+                    SetMode(CameraMode.Free);
+            }
+        }
+
+        public void SetGunAiming(bool aiming) => _gunAiming = aiming;
+
+        // Gun kick: pitch lifts, yaw jitters, both spring back in LateUpdate.
+        public void AddRecoil(float pitch, float yaw)
+        {
+            _recoilPitch += pitch;
+            _recoilYaw += yaw;
+        }
 
         // The player's visual hierarchy can change after Start (the animated
         // character spawns in) — re-cache so first-person hiding covers every

@@ -14,6 +14,8 @@ using Game.Data;
 using Game.Interaction;
 using Game.Audio;
 using Game.Inventory;
+using Game.Combat;
+using Game.Ragdoll;
 
 namespace Game.Core
 {
@@ -85,6 +87,10 @@ namespace Game.Core
                 root.transform.Find($"Crate{i}").gameObject
                     .AddComponent<FootstepSurface>().surface = SurfaceType.Wood;
 
+            // Shooting-range dummies (Health + trigger hitboxes on the bones).
+            DamageableDummy.Spawn(root.transform, new Vector3(5f, 0f, 9f), 205f);
+            DamageableDummy.Spawn(root.transform, new Vector3(-3f, 0f, 11f), 165f);
+
             // ── Player (kinematic capsule + PlayerMotor) ───────────────────
             var player = new GameObject("Player");
             player.transform.SetParent(root.transform);
@@ -112,7 +118,10 @@ namespace Game.Core
 
             var motor = player.AddComponent<PlayerMotor>();
             motor.settings = settings;
+            player.AddComponent<Health>();           // HP bar + starvation target
             player.AddComponent<PlayerAnimator>();   // X Bot + locomotion blends (capsule fallback)
+            player.AddComponent<GunController>();    // T draws (needs pistol in the grid)
+            player.AddComponent<RagdollController>(); // falls + X debug knockdown
             if (Application.isPlaying && Services.TryGet(out InteractionService interaction))
                 interaction.User = player.transform; // menu-built worlds self-heal in Tick
 
@@ -144,7 +153,8 @@ namespace Game.Core
             }
 
             Debug.Log("[WorldBuilder] World ready — WASD move · Shift sprint · Space jump · " +
-                "Ctrl crouch · E interact · RMB aim-strafe · Alt camera mode · Esc cursor");
+                "Ctrl crouch · E interact · Tab inventory · T gun (LMB fire · R reload · " +
+                "RMB ADS) · Alt camera · Esc cursor");
             return root;
         }
 

@@ -47,7 +47,8 @@ namespace Game.Audio
 
         void LateUpdate()   // foot bones are final only after the animator ran
         {
-            if (_motor == null || _leftFoot == null || _rightFoot == null) return;
+            if (_motor == null || !_motor.enabled || _leftFoot == null || _rightFoot == null)
+                return;   // motor off = ragdolled: flailing feet aren't steps
 
             bool grounded = _motor.IsGrounded;
             if (grounded && !_wasGrounded && Time.time - _spawnTime > 0.5f)

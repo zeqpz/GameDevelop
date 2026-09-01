@@ -17,6 +17,7 @@
 // and bows out quietly. The Animator never applies root motion.
 using UnityEngine;
 using Game.Audio;
+using Game.Combat;
 
 namespace Game.Movement
 {
@@ -32,6 +33,7 @@ namespace Game.Movement
         static readonly int TurnDirHash = Animator.StringToHash("TurnDir");
         static readonly int GroundedHash = Animator.StringToHash("Grounded");
         static readonly int CrouchHash = Animator.StringToHash("Crouch");
+        static readonly int PistolHash = Animator.StringToHash("Pistol");
 
         [Tooltip("Body yaw rate (deg/s) that reads as a full-speed in-place turn")]
         public float fullTurnYawRate = 120f;
@@ -39,6 +41,8 @@ namespace Game.Movement
         PlayerMotor _motor;
         CharacterController _cc;
         Animator _animator;
+        GunController _gun;
+        bool _hasPistolParam;   // controller built before the pistol pack? skip SetBool
         float _prevYaw;
         float _turnDir;   // smoothed yaw rate, -1..1
 
@@ -46,6 +50,7 @@ namespace Game.Movement
         {
             _motor = GetComponent<PlayerMotor>();
             _cc = GetComponent<CharacterController>();
+            _gun = GetComponent<GunController>();
 
             var model = Resources.Load<GameObject>(ModelResource);
             var controller = Resources.Load<RuntimeAnimatorController>(ControllerResource);
@@ -69,6 +74,8 @@ namespace Game.Movement
             _animator.runtimeAnimatorController = controller;
             _animator.applyRootMotion = false;   // PlayerMotor owns ALL motion
             _animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            foreach (var p in _animator.parameters)
+                if (p.nameHash == PistolHash) { _hasPistolParam = true; break; }
 
             // Retire the placeholder capsule + facing nose.
             SetInactive("Visual");
@@ -135,6 +142,10 @@ namespace Game.Movement
 
             _animator.SetBool(GroundedHash, _motor.IsGrounded);
             _animator.SetBool(CrouchHash, _motor.IsCrouched);
+            // Gun DRAWN (T) — not merely equipped in the Hand slot — swaps
+            // the armed locomotion family in.
+            if (_hasPistolParam)
+                _animator.SetBool(PistolHash, _gun != null && _gun.IsReady);
         }
     }
 }

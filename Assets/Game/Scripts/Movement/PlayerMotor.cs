@@ -46,6 +46,10 @@ namespace Game.Movement
         public float CrouchT => _crouchT;
         // Systems (carry weight, status effects…) scale target speed here.
         public float ExternalSpeedMult { get; set; } = 1f;
+        // Gun ADS walk cap (Roblox AIM_WALK_MULT) — GunController writes this.
+        public float AimSpeedMult { get; set; } = 1f;
+        // Stamina gate (StatsService) — true while winded.
+        public bool SprintBlocked { get; set; }
         public float PaceFrac => settings != null
             ? Mathf.Clamp01(_speed / settings.sprintSpeed) : 0f;
 
@@ -135,7 +139,7 @@ namespace Game.Movement
             _turnPenalty = Mathf.Max(0f, _turnPenalty - dt * settings.turnPenaltyDecay);
 
             // ── Sprint ramp ────────────────────────────────────────────────
-            bool sprinting = wantSprint && hasInput && _grounded && !_crouched;
+            bool sprinting = wantSprint && hasInput && _grounded && !_crouched && !SprintBlocked;
             _sprintT = Mathf.Clamp01(_sprintT + (sprinting
                 ? dt / settings.sprintRampTime
                 : -dt / settings.sprintDownTime));
@@ -173,7 +177,7 @@ namespace Game.Movement
                     float t = 1f - Mathf.Clamp01(_landTimer / settings.landPenaltyTime);
                     baseTarget *= Mathf.Lerp(settings.landPenaltyStart, 1f, t);
                 }
-                baseTarget *= ExternalSpeedMult;
+                baseTarget *= ExternalSpeedMult * AimSpeedMult;
                 baseTarget *= Mathf.Lerp(1f, settings.crouchSpeedMult, _crouchT);
                 // Backpedal honesty: speed falls away the further travel
                 // points behind the body (aim-mode backpedal; free-look

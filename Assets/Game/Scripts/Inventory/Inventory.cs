@@ -49,11 +49,31 @@ namespace Game.Inventory
             return null;
         }
 
+        // Weapon-style slots (Hand) keep the stack IN the grid — the Roblox
+        // rule: the gun system needs the weapon's cell; clothing detaches.
+        static bool IsGridKeptSlot(EquipSlot slot) => slot == EquipSlot.Hand;
+
+        public bool IsEquipped(ItemStack stack)
+        {
+            foreach (var v in _equipped.Values)
+                if (v == stack) return true;
+            return false;
+        }
+
         // Equip from the grid; an occupied slot swaps its item back to the grid.
         public bool TryEquip(ItemStack stack)
         {
             if (stack == null || stack.Def.equipSlot == EquipSlot.None) return false;
             EquipSlot slot = stack.Def.equipSlot;
+
+            if (IsGridKeptSlot(slot))
+            {
+                if (!Grid.Contains(stack)) return false;
+                _equipped[slot] = stack;   // stays in its cell; replaces any holder
+                NotifyChanged();
+                return true;
+            }
+
             if (!Grid.Remove(stack)) return false;
 
             if (_equipped.TryGetValue(slot, out var prev))
@@ -73,6 +93,12 @@ namespace Game.Inventory
         public bool TryUnequip(EquipSlot slot)
         {
             if (!_equipped.TryGetValue(slot, out var stack)) return false;
+            if (IsGridKeptSlot(slot))
+            {
+                _equipped.Remove(slot);    // never left the grid
+                NotifyChanged();
+                return true;
+            }
             if (!Grid.FindFirstFit(stack)) return false;   // grid full: refuse
             _equipped.Remove(slot);
             NotifyChanged();
@@ -83,6 +109,8 @@ namespace Game.Inventory
         public bool Remove(ItemStack stack)
         {
             if (!Grid.Remove(stack)) return false;
+            foreach (var pair in _equipped)          // discarding an in-grid equip
+                if (pair.Value == stack) { _equipped.Remove(pair.Key); break; }
             NotifyChanged();
             return true;
         }
@@ -105,10 +133,15 @@ namespace Game.Inventory
             var list = new List<SavedStack>();
             var indexOf = new Dictionary<ItemStack, int>();
 
-            foreach (var pair in Grid.Entries)
-                WriteStack(pair.Key, pair.Value, (int)EquipSlot.None - 1, -1, list, indexOf);
-            foreach (var pair in _equipped)
-                WriteStack(pair.Value, new Vector2Int(-1, -1), (int)pair.Key, -1, list, indexOf);
+            var slotOf = new Dictionary<ItemStack, int>();
+            foreach (var pair in _equipped) slotOf[pair.Value] = (int)pair.Key;
+
+            foreach (var pair in Grid.Entries)   // in-grid equips (weapons) keep pos + slot
+                WriteStack(pair.Key, pair.Value,
+                    slotOf.TryGetValue(pair.Key, out var s) ? s : -1, -1, list, indexOf);
+            foreach (var pair in _equipped)      // off-grid equips (clothing)
+                if (!Grid.Contains(pair.Value))
+                    WriteStack(pair.Value, new Vector2Int(-1, -1), (int)pair.Key, -1, list, indexOf);
             return list;
         }
 
@@ -164,17 +197,22 @@ namespace Game.Inventory
                         if (parentGrid == null || !parentGrid.FindFirstFit(stack))
                             Grid.FindFirstFit(stack);   // container gone: spill to grid
                 }
-                else if (s.slot > (int)EquipSlot.None)
+                else
                 {
-                    var slot = (EquipSlot)s.slot;
-                    if (stack.Def.equipSlot == slot && !_equipped.ContainsKey(slot))
-                        _equipped[slot] = stack;
+                    var slot = (EquipSlot)Mathf.Max(0, s.slot);
+                    bool equipValid = slot != EquipSlot.None
+                        && stack.Def.equipSlot == slot && !_equipped.ContainsKey(slot);
+
+                    if (equipValid && !IsGridKeptSlot(slot))
+                    {
+                        _equipped[slot] = stack;   // clothing rides off-grid
+                    }
                     else
-                        Grid.FindFirstFit(stack);
-                }
-                else if (!Grid.Place(stack, s.x, s.y))
-                {
-                    Grid.FindFirstFit(stack);
+                    {
+                        bool placed = (s.x >= 0 && Grid.Place(stack, s.x, s.y))
+                            || Grid.FindFirstFit(stack);
+                        if (placed && equipValid) _equipped[slot] = stack;   // weapon in-grid
+                    }
                 }
             }
             NotifyChanged();

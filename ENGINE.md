@@ -19,11 +19,25 @@ worlds/assets build from code where possible.
       flick tilt, FOV kick, wall collision, crouch pivot drop
 - [x] **Character + animation pipeline** — Mixamo auto-import
       (LocomotionSetup), code-built controller, 17 clips, velocity-driven
-      blends, turn-in-place, crouch, gait-blended jumps
+      blends, turn-in-place, crouch, gait-blended jumps; + the 20-clip
+      pistol pack as a full-body armed family (Pistol bool ← gun drawn):
+      real backpedal, auto-sorted strafes/jumps, kneel-as-armed-crouch,
+      procedural arm aim reduced to a pitch assist under authored clips
 - [x] **Save layer v0** — versioned JSON profile, autosave, migration hook
       (ProfileService-lite; backend swaps in one place)
 - [x] **Code-built world bootstrap** — WorldBuilder/RuntimeBootstrap + edit
       menu; Play in any scene produces the test world
+- [x] **World clock + day/night** — TimeService: the Roblox port (40-min
+      days, compressed 3-day-month calendar from Sep 1 2026, seasonal
+      sunrise/sunset, shipped hourly lighting curve → code-owned sun/moon +
+      flat ambient), elapsed time persisted in profile v4. Weather/rain/
+      lightning visuals are the later half of the port.
+- [x] **Survival HUD** — the Roblox SurvivalHUD 1:1 (HP/FOOD/H₂O/STA bars
+      + DateTimeFrame clock) with the SurvivalClient juice (fill tweens,
+      low-color swap, number flash/shake, tip particles); player Health +
+      starvation damage (2/3 HP·s) + spawn-reset respawn close the vitals
+      loop. Hunger/thirst drains corrected to shipped rates (≤30
+      self-double rule).
 
 ## Decisions to lock (they get expensive to reverse)
 
@@ -39,9 +53,10 @@ worlds/assets build from code where possible.
 - [ ] **Scenes: code-built vs authored.** Test world stays code-built; real
       maps (Maplewood streets, stacked interiors) will want authored
       geometry. Likely hybrid: authored geometry scenes + code-built systems.
-- [ ] **Ragdolls: port the kinematic Verlet RagdollEngine or use Unity
-      physics ragdolls.** House stance says kinematic; Unity's ragdolls are
-      cheap but off-philosophy.
+- [x] **Ragdolls — LOCKED: the Verlet RagdollEngine, ported + extended
+      with pose-matching muscles** (active ragdolls that chase the playing
+      animation — GTA-style knockdowns and get-ups). Unity physics ragdolls
+      rejected as off-philosophy.
 - [ ] **Git LFS** before big art/audio lands (FBXs are fine today).
 
 ## Tier 1 — core services (next; nearly everything consumes these)
@@ -78,13 +93,20 @@ worlds/assets build from code where possible.
 
 ## Tier 2 — simulation stacks
 
-- [ ] **VFX/pooling foundation** — generic pooler, decal system, and the
-      layer/collision matrix policy (FX ignore characters; explicit
-      hitbox layers — no invisible-part hacks this time).
-- [ ] **Gun core** — raycast PerformCast twin (client+server seam kept),
-      spread model with the close-range curve, ready/ADS states, body-region
-      hitbox colliders + damage map (pools per region), damage feedback,
-      shells/tracers on the pooler.
+- [x] **VFX/pooling foundation** — generic Pool + VfxService: tracers,
+      muzzle flash+light, impact bursts, capped decal ring (parented to hit
+      surfaces), blood mist, and the Roblox shell system verbatim (anchored
+      parabola, per-step raycast bounces, ShellConfig.LAUNCH numbers).
+      Collision policy BY CONSTRUCTION: FX have no colliders; hitboxes are
+      triggers; every non-combat query ignores triggers.
+- [x] **Gun core** — GunController: Lowered/Ready(T)/ADS(RMB) state machine
+      with the ported HIP_FIRE (×3 +1°, recoil ×1.15), CLOSE_RANGE curve
+      (dead-on ≤4 st), ADS walk ×0.55 + sprint-cancel at 8.5 st/s, bloom,
+      camera recoil, pistol 28 dmg with region mults (head ×2), trigger
+      hitboxes + Health on range dummies, hitmarker/crosshair/ammo HUD,
+      synthesized gunshot/dry/reload audio, ShotFired on the bus (NPC
+      hearing seam). Later: real gun models, mag/chamber sim, ammo items,
+      server validation seam.
 - [ ] **NPC foundation** — NavMesh (package already in manifest) + patrol
       node graphs, perception stub, and the sim-tick vs render-interpolation
       split (the server-rendered-NPCs-are-choppy lesson, applied local).
@@ -92,8 +114,14 @@ worlds/assets build from code where possible.
 - [ ] **Raycast car chassis** — kinematic spring chassis from the manual;
       seat-as-marker + hidden driver pattern; ChassisSimState-style
       sim/render separation; engine/fuel/locks are game-layer later.
-- [ ] **Ragdoll + fall damage** — per the ragdoll decision; plausibility
-      caps on physics damage (anti-spike guard lesson).
+- [x] **Ragdoll + fall damage** — RagdollEngine (the Roblox Verlet sim,
+      verbatim rules: drift-pump fix, position-only cleanup pass,
+      per-particle sleep, core-down freeze, 0.05/0.4 rest/friction) +
+      RagdollController (Animator-target muscles, mid-air sky-fall trigger
+      ≥3.5 st below takeoff, slam damage capped 40 @ 0.8 s cooldown, get-up
+      muscle ramp, X debug shove). Dummies die into real ragdolls. Later:
+      topple ("dead man standing"), alive-mode hand-cradle/knee-tuck,
+      corpse persistence, trip triggers from sprint collisions.
 - [ ] **UI kit v0** — IN PROGRESS. Shipped: UiKit (procedural rounded-rect
       UICorner/UIStroke twins, Montserrat-as-Gotham, Roblox TL coordinates,
       hand-rolled hit tests) + InventoryScreen — the Roblox InventoryGui

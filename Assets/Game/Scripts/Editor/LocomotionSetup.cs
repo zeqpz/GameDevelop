@@ -27,9 +27,10 @@ namespace Game.EditorTools
     public static class LocomotionSetup
     {
         const string Folder = "Assets/Game/Resources/Locomotion";
+        const string PistolFolder = Folder + "/Pistol";    // Mixamo pistol pack
         const string CharacterFbx = Folder + "/X Bot.fbx";
         const string ControllerPath = Folder + "/PlayerLocomotion.controller";
-        const string ImportTag = "locomotion-import-v3";   // bump → full reimport + controller rebuild
+        const string ImportTag = "locomotion-import-v4";   // bump → full reimport + controller rebuild
 
         static readonly string[] LoopedClips =
         {
@@ -38,6 +39,16 @@ namespace Game.EditorTools
             "left strafe", "right strafe",
             "left turn", "right turn", "left turn 90", "right turn 90",
             "crouching idle", "crouched walking",
+            // Pistol pack (arcs imported for later use; one-shots — the two
+            // jumps and the kneel transitions — stay un-looped)
+            "pistol idle", "pistol kneeling idle",
+            "pistol walk", "pistol run",
+            "pistol walk backward", "pistol run backward",
+            "pistol strafe", "pistol strafe (2)",
+            "pistol walk arc", "pistol walk arc (2)",
+            "pistol run arc", "pistol run arc (2)",
+            "pistol walk backward arc", "pistol walk backward arc (2)",
+            "pistol run backward arc", "pistol run backward arc (2)",
         };
 
         static LocomotionSetup()
@@ -87,7 +98,8 @@ namespace Game.EditorTools
         }
 
         static IEnumerable<string> AllFbxPaths() =>
-            Directory.GetFiles(Folder, "*.fbx").Select(p => p.Replace('\\', '/'));
+            Directory.GetFiles(Folder, "*.fbx", SearchOption.AllDirectories)
+                .Select(p => p.Replace('\\', '/'));
 
         static void ConfigureModel(string path, Avatar sourceAvatar)
         {
@@ -117,7 +129,7 @@ namespace Game.EditorTools
                 {
                     clip.name = clipName;
                     clip.loopTime = LoopedClips.Contains(clipName);
-                    bool isJumpClip = clipName == "jump" || clipName == "jumping";
+                    bool isJumpClip = clipName.Contains("jump");   // incl. pistol jumps
                     clip.lockRootRotation = false;      // rotation → root motion (discarded)
                     clip.lockRootPositionXZ = false;    // travel → root motion (discarded)
                     clip.lockRootHeightY = !isJumpClip; // bob in pose; jump rises are real
@@ -135,6 +147,7 @@ namespace Game.EditorTools
         static AnimationClip Clip(string file)
         {
             string path = $"{Folder}/{file}.fbx";
+            if (!File.Exists(path)) path = $"{PistolFolder}/{file}.fbx";
             var clip = AssetDatabase.LoadAllAssetsAtPath(path)
                 .OfType<AnimationClip>()
                 .FirstOrDefault(c => !c.name.StartsWith("__preview"));
@@ -281,6 +294,134 @@ namespace Game.EditorTools
             AddTransition(turn, locomotion, 0.3f,
                 (AnimatorConditionMode.Less, 0.1f, "TurnDir"),
                 (AnimatorConditionMode.Greater, -0.1f, "TurnDir"));
+
+            // ── Pistol family (Mixamo pistol pack in Locomotion/Pistol) ────
+            if (File.Exists($"{PistolFolder}/pistol idle.fbx"))
+                BuildPistolStates(controller, sm, locomotion, turn, air, crouchMove);
+        }
+
+        // Planar root-motion speed — how the strafe/jump variants are told
+        // apart without trusting Mixamo's "(2)" suffix ordering.
+        static float PlanarSpeed(AnimationClip c)
+        {
+            Vector3 v = c.averageSpeed;
+            v.y = 0f;
+            return v.magnitude;
+        }
+
+        // The armed twin of the base graph, switched by the "Pistol" bool
+        // (PlayerAnimator sets it from GunController.IsReady — gun DRAWN, not
+        // merely equipped). Full-body states, not an upper-body mask: the
+        // pack's legs stride differently and real backpedal clips replace
+        // the reversed-walk trick. No pistol turn-in-place clips exist, so
+        // gait-0 turns idle-slide — acceptable until the pack grows.
+        static void BuildPistolStates(AnimatorController controller,
+            AnimatorStateMachine sm, AnimatorState locomotion, AnimatorState turn,
+            AnimatorState air, AnimatorState crouchMove)
+        {
+            controller.AddParameter("Pistol", AnimatorControllerParameterType.Bool);
+
+            // Strafe handedness by root motion: leftward clips travel −X.
+            var strafeA = Clip("pistol strafe");
+            var strafeB = Clip("pistol strafe (2)");
+            var strafeL = strafeA.averageSpeed.x <= strafeB.averageSpeed.x ? strafeA : strafeB;
+            var strafeR = ReferenceEquals(strafeL, strafeA) ? strafeB : strafeA;
+
+            // ── Grounded 2D blend, gait units — REAL backpedal clips ───────
+            var pistolTree = new BlendTree
+            {
+                name = "PistolLocomotionTree",
+                blendType = BlendTreeType.FreeformDirectional2D,
+                blendParameter = "MoveX",
+                blendParameterY = "MoveY",
+            };
+            AssetDatabase.AddObjectToAsset(pistolTree, controller);
+            pistolTree.AddChild(Clip("pistol idle"), Vector2.zero);
+            pistolTree.AddChild(Clip("pistol walk"), new Vector2(0f, 1f));
+            pistolTree.AddChild(Clip("pistol run"), new Vector2(0f, 2f));
+            pistolTree.AddChild(Clip("pistol walk backward"), new Vector2(0f, -1f));
+            pistolTree.AddChild(Clip("pistol run backward"), new Vector2(0f, -2f));
+            pistolTree.AddChild(strafeL, new Vector2(-1f, 0f));   // one strafe speed —
+            pistolTree.AddChild(strafeL, new Vector2(-2f, 0f));   // reused at both paces
+            pistolTree.AddChild(strafeR, new Vector2(1f, 0f));
+            pistolTree.AddChild(strafeR, new Vector2(2f, 0f));
+
+            var pistolLoco = sm.AddState("PistolLocomotion");
+            pistolLoco.motion = pistolTree;
+
+            // ── Airborne: standing hop ↔ moving leap by planar speed ───────
+            var jumpA = Clip("pistol jump");
+            var jumpB = Clip("pistol jump (2)");
+            var jumpSlow = PlanarSpeed(jumpA) <= PlanarSpeed(jumpB) ? jumpA : jumpB;
+            var jumpFast = ReferenceEquals(jumpSlow, jumpA) ? jumpB : jumpA;
+            var pistolAirTree = new BlendTree
+            {
+                name = "PistolAirborneTree",
+                blendType = BlendTreeType.Simple1D,
+                blendParameter = "Gait",
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(pistolAirTree, controller);
+            pistolAirTree.AddChild(jumpSlow, 0.4f);
+            pistolAirTree.AddChild(jumpFast, 1.3f);
+
+            var pistolAir = sm.AddState("PistolAirborne");
+            pistolAir.motion = pistolAirTree;
+
+            // ── Kneel = the pack's crouch (idle only — no kneel-walk clip) ─
+            var pKneel = sm.AddState("PistolKneel");
+            pKneel.motion = Clip("pistol kneeling idle");
+            var pKneelIn = sm.AddState("PistolStandToKneel");
+            pKneelIn.motion = Clip("pistol stand to kneel");
+            var pKneelOut = sm.AddState("PistolKneelToStand");
+            pKneelOut.motion = Clip("pistol kneel to stand");
+
+            // ── Family swaps: draw / holster ───────────────────────────────
+            AddTransition(locomotion, pistolLoco, 0.2f,
+                (AnimatorConditionMode.If, 0f, "Pistol"));
+            AddTransition(turn, pistolLoco, 0.2f,
+                (AnimatorConditionMode.If, 0f, "Pistol"));
+            AddTransition(pistolLoco, locomotion, 0.2f,
+                (AnimatorConditionMode.IfNot, 0f, "Pistol"));
+
+            // ── Airborne (matching the base timings) ───────────────────────
+            AddTransition(pistolLoco, pistolAir, 0.06f,
+                (AnimatorConditionMode.IfNot, 0f, "Grounded"));
+            AddTransition(pistolAir, pistolLoco, 0.18f,
+                (AnimatorConditionMode.If, 0f, "Grounded"));
+            AddTransition(pistolAir, air, 0.1f,
+                (AnimatorConditionMode.IfNot, 0f, "Pistol"));
+            AddTransition(air, pistolAir, 0.1f,
+                (AnimatorConditionMode.If, 0f, "Pistol"));
+
+            // ── Kneel wiring (mirrors the base crouch graph) ───────────────
+            AddTransition(pistolLoco, pKneelIn, 0.15f,
+                (AnimatorConditionMode.If, 0f, "Crouch"));
+            AddTransition(pKneel, pKneelOut, 0.15f,
+                (AnimatorConditionMode.IfNot, 0f, "Crouch"));
+            AddTransition(pKneel, pistolAir, 0.06f,
+                (AnimatorConditionMode.IfNot, 0f, "Grounded"));
+            // Quick double-Ctrl must never trap a one-shot mid-clip.
+            AddTransition(pKneelIn, pKneelOut, 0.15f,
+                (AnimatorConditionMode.IfNot, 0f, "Crouch"));
+            AddTransition(pKneelOut, pKneelIn, 0.15f,
+                (AnimatorConditionMode.If, 0f, "Crouch"));
+            var settle = pKneelIn.AddTransition(pKneel);
+            settle.hasExitTime = true;
+            settle.exitTime = 0.75f;
+            settle.hasFixedDuration = true;
+            settle.duration = 0.25f;
+            var rise = pKneelOut.AddTransition(pistolLoco);
+            rise.hasExitTime = true;
+            rise.exitTime = 0.7f;
+            rise.hasFixedDuration = true;
+            rise.duration = 0.25f;
+
+            // ── Drawing/holstering while crouched swaps stance in place ────
+            AddTransition(crouchMove, pKneel, 0.2f,
+                (AnimatorConditionMode.If, 0f, "Pistol"));
+            AddTransition(pKneel, crouchMove, 0.2f,
+                (AnimatorConditionMode.IfNot, 0f, "Pistol"));
         }
 
         static void AddTransition(AnimatorState from, AnimatorState to, float duration,

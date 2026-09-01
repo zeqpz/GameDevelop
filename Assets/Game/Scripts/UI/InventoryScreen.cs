@@ -19,6 +19,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using Game.Audio;
 using Game.Core;
 using Game.Inventory;
 
@@ -67,8 +68,11 @@ namespace Game.UI
         RectTransform _ctxRowHolder;
 
         bool _open;
+        bool _ctxClosing;
         ItemStack _drag;
         bool _dragRot;
+        float _gsx, _gsy, _gsvx, _gsvy, _grot;   // dangle spring state
+        CanvasGroup _ghostCg;
         ItemStack _ctxStack;
         InputService _input;
         InventoryService _inv;
@@ -218,6 +222,7 @@ namespace Game.UI
             var glrt = (RectTransform)_ghostLabel.transform;
             glrt.anchorMin = Vector2.zero; glrt.anchorMax = Vector2.one;
             glrt.offsetMin = glrt.offsetMax = Vector2.zero;
+            _ghostCg = _ghostRt.gameObject.AddComponent<CanvasGroup>();
             _ghostRt.gameObject.SetActive(false);
 
             // ── Context menu (188 wide, header 94, rows 35) ────────────────
@@ -263,9 +268,11 @@ namespace Game.UI
                 var size = stack.Size;
                 float w = size.x * Step - Gap, h = size.y * Step - Gap;
                 var tint = stack.Def.tileColor;
+                bool equipped = _inv.Player.IsEquipped(stack);   // green stroke + E badge
                 var (outer, _) = UiKit.Panel(_itemLayer, "Item_" + stack.Def.id,
                     pos.x * Step, pos.y * Step, w, h,
-                    new Color(tint.r, tint.g, tint.b, 0.88f), 2, new Color(0f, 0f, 0f, 0.9f));
+                    new Color(tint.r, tint.g, tint.b, 0.88f), 2,
+                    equipped ? (Color)new Color32(45, 160, 45, 255) : new Color(0f, 0f, 0f, 0.9f));
 
                 var strip = UiKit.Fill(outer, "NameStrip", new Color(0f, 0f, 0f, 0.65f));
                 UiKit.At((RectTransform)strip.transform, 0f, h - 16f, w, 16f);
@@ -285,6 +292,17 @@ namespace Game.UI
                     var qrt = (RectTransform)qty.transform;
                     qrt.anchorMin = Vector2.zero; qrt.anchorMax = Vector2.one;
                     qrt.offsetMin = qrt.offsetMax = Vector2.zero;
+                }
+
+                if (equipped)   // EquipBadge template: 16×14 green "E", top-left
+                {
+                    var badge = UiKit.Fill(outer, "EquipBadge", new Color32(50, 140, 50, 230), 3);
+                    UiKit.At((RectTransform)badge.transform, 2f, 2f, 16f, 14f);
+                    var eLbl = UiKit.Label(badge.transform, "E", "E", UiKit.FontBold, 10,
+                        Color.white, TextAnchor.MiddleCenter);
+                    var ert = (RectTransform)eLbl.transform;
+                    ert.anchorMin = Vector2.zero; ert.anchorMax = Vector2.one;
+                    ert.offsetMin = ert.offsetMax = Vector2.zero;
                 }
                 _tiles.Add((outer, stack));
             }
@@ -309,7 +327,7 @@ namespace Game.UI
             if (_input.InventoryTogglePressed)
             {
                 if (_open) Close();
-                else Open();
+                else if (!_input.GameplayBlocked) Open();   // another screen owns it
                 return;
             }
             if (!_open) return;
@@ -361,18 +379,36 @@ namespace Game.UI
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
             RebuildDynamic();
+            PlayUi(ProceduralAudio.InvZip(), 0.55f, 1.05f);   // bag unzip
         }
 
         void Close()
         {
-            CloseCtx();
-            if (_drag != null) CancelDrag();
+            CloseCtx(true);              // instant: the whole screen is going away
+            if (_drag != null) CancelDrag(true);
             _open = false;
             _root.SetActive(false);
             _input.SetGameplayBlocked(false);
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
+            PlayUi(ProceduralAudio.InvZip(), 0.5f, 0.88f);    // lower pitch = zip shut
         }
+
+        void PlayUi(AudioClip clip, float vol, float pitch)
+        {
+            if (Services.TryGet(out AudioService audio)) audio.PlayUi(clip, vol, pitch);
+        }
+
+        // InventoryClient's per-category PlaybackSpeed offsets, mapped onto
+        // our categories (weapon 0.85 · scrap 0.80 · food/med 1.1 · cloth 1.0).
+        static float CategoryPitch(ItemCategory cat) => cat switch
+        {
+            ItemCategory.Weapon => 0.85f,
+            ItemCategory.Material => 0.8f,
+            ItemCategory.Consumable => 1.1f,
+            ItemCategory.Container => 0.95f,
+            _ => 1.0f,
+        };
 
         // ──────────────────────────────────────────────────────── drag ─────
         void StartDrag(ItemStack stack)
@@ -381,7 +417,20 @@ namespace Game.UI
             _dragRot = stack.Rotated;
             SetGhostSize();
             _ghostLabel.text = stack.Def.displayName;
+
+            // Seed the dangle spring at the grab point (drag.sx/sy/svx/svy/rot).
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                _canvasRt, _input.MousePosition, null, out var seed);
+            _gsx = seed.x;
+            _gsy = seed.y;
+            _gsvx = _gsvy = _grot = 0f;
+            _ghostRt.anchoredPosition = seed;
+            _ghostRt.localRotation = Quaternion.identity;
+            _ghostCg.alpha = 1f;                       // fade is one-way; reset on reuse
             _ghostRt.gameObject.SetActive(true);
+            UiFx.PopIn(_ghostRt, UiFx.GhostFrom);      // pops into your hand
+            PlayUi(ProceduralAudio.UiTick(), 0.7f, 1f);
+            CloseCtx(true);   // Roblox: ghost pops in the same frame the menu snaps
         }
 
         void SetGhostSize()
@@ -393,11 +442,29 @@ namespace Game.UI
 
         void UpdateDrag(Vector2 mouse)
         {
-            if (_input.UiRotatePressed) { _dragRot = !_dragRot; SetGhostSize(); }
+            if (_input.UiRotatePressed)
+            {
+                _dragRot = !_dragRot;
+                SetGhostSize();
+                UiFx.PopIn(_ghostRt, 0.90f, 0.10f);    // rotateDrag's re-pop
+                PlayUi(ProceduralAudio.UiThud(), 0.45f, CategoryPitch(_drag.Def.category));
+            }
 
+            // Dangle spring (InventoryClient render loop, verbatim constants):
+            // an underdamped chase — the held item trails the cursor, leans
+            // into travel (±14°), overshoots and wobbles settled in ~0.5 s.
             RectTransformUtility.ScreenPointToLocalPointInRectangle(
                 _canvasRt, mouse, null, out var local);
-            _ghostRt.anchoredPosition = local;
+            float step = Mathf.Min(Time.deltaTime, 1f / 30f);
+            float sDecay = 1f - Mathf.Min(12f * step, 0.9f);
+            _gsvx = _gsvx * sDecay + (local.x - _gsx) * 180f * step;
+            _gsvy = _gsvy * sDecay + (local.y - _gsy) * 180f * step;
+            _gsx += _gsvx * step;
+            _gsy += _gsvy * step;
+            _ghostRt.anchoredPosition = new Vector2(_gsx, _gsy);
+            float lean = Mathf.Clamp(_gsvx * 0.035f, -14f, 14f);
+            _grot += (lean - _grot) * Mathf.Min(step * 14f, 1f);
+            _ghostRt.localRotation = Quaternion.Euler(0f, 0f, -_grot);
 
             var d = _drag.Def.gridSize;
             int w = _dragRot ? d.y : d.x, h = _dragRot ? d.x : d.y;
@@ -419,19 +486,33 @@ namespace Game.UI
             if (_input.UiClickReleased)
             {
                 ResetCellTints();
-                _ghostRt.gameObject.SetActive(false);
                 var stack = _drag;
                 _drag = null;
-                if (valid) _inv.Player.Grid.TryMove(stack, cx, cy, _dragRot);
+                bool placed = valid && _inv.Player.Grid.TryMove(stack, cx, cy, _dragRot);
+                if (placed)
+                    PlayUi(ProceduralAudio.UiThud(), 0.55f, CategoryPitch(stack.Def.category));
+                // releaseGhost: the ghost is detached garbage now — pop-fade it
+                // away; a re-pick mid-tween supersedes cleanly (gen guard).
+                UiFx.PopOut(_ghostRt, UiFx.GhostTo, UiFx.OutTime, _ghostCg,
+                    () => _ghostRt.gameObject.SetActive(false));
                 _inv.Player.NotifyChanged();   // rebuild either way (revert too)
             }
         }
 
-        void CancelDrag()
+        void CancelDrag(bool instant = false)
         {
             ResetCellTints();
-            _ghostRt.gameObject.SetActive(false);
             _drag = null;
+            if (instant)
+            {
+                UiFx.Snap(_ghostRt);
+                _ghostRt.gameObject.SetActive(false);
+            }
+            else
+            {
+                UiFx.PopOut(_ghostRt, UiFx.GhostTo, UiFx.OutTime, _ghostCg,
+                    () => _ghostRt.gameObject.SetActive(false));
+            }
             RebuildDynamic();
         }
 
@@ -457,14 +538,19 @@ namespace Game.UI
             _ctxDesc.text = stack.Def.category.ToString();
 
             int y = 0;
-            bool hasRow = false;   // Hand has no panel row (Roblox keeps weapons in-grid)
-            foreach (var rd in RowDefs) if (rd.slot == stack.Def.equipSlot) hasRow = true;
-            if (hasRow)
-                AddCtxRow(y++, "Equip", new Color32(110, 205, 110, 255), () =>
+            if (stack.Def.equipSlot != EquipSlot.None)
+            {
+                // In-grid equips (weapons) toggle here; clothing tiles only
+                // ever show "Equip" (equipped clothing leaves the grid).
+                bool isEquipped = _inv.Player.IsEquipped(stack);
+                AddCtxRow(y++, isEquipped ? "Unequip" : "Equip",
+                    new Color32(110, 205, 110, 255), () =>
                 {
-                    _inv.Player.TryEquip(_ctxStack);
+                    if (isEquipped) _inv.Player.TryUnequip(_ctxStack.Def.equipSlot);
+                    else _inv.Player.TryEquip(_ctxStack);
                     CloseCtx();
                 });
+            }
             AddCtxRow(y++, "Discard", new Color32(210, 75, 75, 255), () =>
             {
                 _inv.Player.Remove(_ctxStack);
@@ -479,7 +565,9 @@ namespace Game.UI
             local.x = Mathf.Min(local.x, half.x - 190f);
             local.y = Mathf.Max(local.y, -half.y + height + 2f);
             _ctxRt.anchoredPosition = local;
+            _ctxClosing = false;
             _ctxRt.gameObject.SetActive(true);
+            UiFx.PopIn(_ctxRt, UiFx.MenuFrom);   // deterministic: re-seeds every call
         }
 
         void AddCtxRow(int index, string label, Color textColor, System.Action action)
@@ -493,6 +581,7 @@ namespace Game.UI
 
         void UpdateCtx(Vector2 mouse)
         {
+            if (_ctxClosing) return;   // backdrop-swallow while the out-tween plays
             foreach (var row in _ctxRows)
                 row.Bg.color = new Color32(38, 38, 38,
                     (byte)(UiKit.Contains(row.Rt, mouse) ? 255 : 0));
@@ -509,10 +598,22 @@ namespace Game.UI
             }
         }
 
-        void CloseCtx()
+        void CloseCtx(bool instant = false)
         {
             _ctxStack = null;
-            _ctxRt.gameObject.SetActive(false);
+            if (instant || !_ctxRt.gameObject.activeSelf)
+            {
+                UiFx.Snap(_ctxRt);          // never strand a mid-flight scale
+                _ctxClosing = false;
+                _ctxRt.gameObject.SetActive(false);
+                return;
+            }
+            _ctxClosing = true;
+            UiFx.PopOut(_ctxRt, UiFx.MenuTo, UiFx.OutTime, null, () =>
+            {
+                _ctxClosing = false;
+                _ctxRt.gameObject.SetActive(false);
+            });
         }
     }
 }

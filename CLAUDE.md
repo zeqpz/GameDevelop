@@ -32,7 +32,14 @@ All tuned Roblox numbers convert studs→meters at the edge via
   persistentDataPath, 30s autosave, quit flush, migration hook. Swap the
   backend here only.
 - **Movement/PlayerAnimator.cs + Editor/LocomotionSetup.cs** — Mixamo X Bot
-  + 17-clip locomotion pack in Assets/Game/Resources/Locomotion.
+  + 17-clip locomotion pack in Assets/Game/Resources/Locomotion, plus the
+  20-clip pistol pack in Locomotion/Pistol: a full-body armed state family
+  ("Pistol" bool ← GunController.IsReady, i.e. gun DRAWN via T) — 2D blend
+  with REAL backpedal clips, strafe handedness + jump variants auto-sorted
+  by clip.averageSpeed root motion, pistol jumps, kneel = armed crouch
+  (idle only, no kneel-walk clip yet; arcs imported unused). While pistol
+  clips drive, GunController's procedural arm aim drops to ×0.35 pitch
+  assist so it doesn't fight the authored hold.
   LocomotionSetup auto-runs after reloads (or Game ▸ Rebuild Locomotion):
   imports every FBX as Humanoid on X Bot's avatar (in-place, looped, jump
   rise baked out) and code-builds PlayerLocomotion.controller — 2D velocity
@@ -74,7 +81,101 @@ All tuned Roblox numbers convert studs→meters at the edge via
   menu · Tab toggles, InventoryClient:2454). Opening blocks the Gameplay
   map and frees the cursor; Esc closes ctx → drag → screen. Flat def-color
   tiles stand in for the Roblox 3D viewport icons until the RenderTexture
-  icon rig.
+  icon rig. UiFx = the Roblox UIFx module ported (SCALE-only pops — never
+  size, so drag math stays honest; Back/Out 0.14 in, Quad/In 0.10 out,
+  generation-guarded; menu 0.90→1→0.92, ghost 0.78→1→0.62 + one-way fade,
+  Snap for screen-close paths) + the verbatim drag-ghost dangle spring
+  (stiffness 180, decay 12 ≈ ζ0.45, ±14° lean, dt clamped 1/30) + UI sounds:
+  zip open/close (pitch 1.05/0.88), pickup tick, category-pitched thud on
+  rotate/place (weapon 0.85 · material 0.80 · consumable 1.1 · container
+  0.95, InventoryClient's PlaybackSpeed offsets).
+- **Vfx/** — Pool (generic pooler) + VfxService: tracer/flash/impact/decal
+  ring (64 cap, parented to surfaces)/blood mist/shell brass. Shells are the
+  Roblox system: ANCHORED kinematic parabola, per-step raycast bounce,
+  ShellConfig.LAUNCH tune via GameUnits; brass = a PRELOADED 24-shell
+  per-player ring reused oldest-first — settled casings stay on the ground
+  (no timers) until their slot recycles. Casing model =
+  Resources/Vfx/Shell9mm.obj (Studio export), long axis normalized → Z.
+  BLOOD (spawnBloodSplatter/Mist port): layered cylinder splats — big
+  centre 0.9–1.5 st in a tight cone along the shot, medium ring, outer
+  dots — each disc rolling ITS OWN red (95–145,0,0 — the coloring effect),
+  popping open 0.10 s Quad-Out, 400-cap oldest-evicted. Placement rules:
+  rays that miss place NOTHING (no sky blood), Rigidbody/Health hits
+  reject + re-roll on a count×3 attempt budget (no splats on bodies that
+  later move), fit-to-face clamp on BoxColliders (never overhangs crate
+  lips; <0.1 st slivers re-roll), light mode = ground-only bleed pattern.
+  Mist is damage-scaled (dmg/28, clamp 0.55–1.8, ±18% jitter) with the
+  fast-in/slow-out alpha curve. COLLISION POLICY: FX carry no
+  colliders; body hitboxes are TRIGGERS (only gun casts query triggers —
+  camera/footsteps/interaction/crouch all pass Ignore).
+- **Combat/** — GunData (ported numbers: HIP_FIRE ×3 +1° / recoil ×1.15,
+  CLOSE_RANGE 4/6/14 st curve, ADS walk ×0.55, sprint-cancel 8.5 st/s,
+  pistol 28 dmg, head ×2) + GunController (T ready / RMB ADS / LMB semi;
+  T locks the shoulder camera — Alt skips Free while the gun's up, RMB
+  pulls the AIM_ZOOM boom, lowering restores the prior mode —
+  clean-probe distance scaling, the verbatim live-spread machine (0.3°
+  floor · +1.5°/shot cap 8° · 5°/s decay · movement tiers +1.5° walking /
+  +3° past 14 st/s, snap-up/ease-down — the crosshair breathes with it),
+  camera recoil, held-gun primitive
+  aimed per-frame + light procedural arm pose, GunHud crosshair-by-cone +
+  hitmarker + ammo, ShotFired bus event) + Health/BodyHitbox +
+  DamageableDummy range targets (bone trigger hitboxes, tip-over death,
+  3 s respawn). Weapons equip to Hand while KEEPING their grid cell (green
+  stroke + E badge; ctx menu toggles Equip/Unequip) — T draws only the
+  equipped Hand weapon; clothing equips still detach from the grid.
+- **Stats/** — the StatService/SurvivalService port. Five skills 0–100
+  (MAX_*=100): Agility ← meters sprinted, Accuracy ← the gunAccuracy shot
+  accumulator (hits ×4 vs misses), Strength ← moving under load,
+  Intelligence ← AddIntelligence (crafting later), Reputation ← kills route
+  here (+1 per kill; earnings later). Effects: Accuracy trims gun spread up
+  to −15%, Strength eases carry penalties, Agility trims sprint drain up to
+  −25%. Vitals: hunger 0.05/s / thirst 0.07/s (shipped Roblox rates) with
+  the ≤30 SELF-double-drain rule (the old cross-double was a port error);
+  stamina drains on sprint ×LoadConfig.StaminaDrainMult, regens after
+  1.2 s, gates sprint via PlayerMotor.SprintBlocked (block ≤4, free ≥18).
+  Starvation (SurvivalService rule): at 0 hunger/thirst the player's
+  Health (WorldBuilder adds one) takes 2/3 dmg per second; death respawns
+  at spawn with vitals maxed. Player deaths never award Reputation.
+  LoadConfig = the shared carry curve (0.4%/lb speed, floor 35%,
+  +0.6%/lb drain cap 2.5×, Strength halves both) — StatsService applies it
+  to ExternalSpeedMult every tick (replaced the interim inventory curve).
+  Persisted in profile v3. UI/StatsScreen = the /stats panel on P (SKILLS
+  blue bars / VITALS green / MONEY / RECORD / LICENSES; read-only, blocks
+  gameplay). No 'aim' stat — v2 accuracy supersedes it, per the Roblox note.
+- **World/TimeService.cs** — the Roblox TimeService port: TIME_SCALE 36
+  (40 real min = 1 game day), 6 AM start, date rolls at 6 AM (kept quirk),
+  compressed 3-day months / 36-day years from Sep 1 2026, seasons picking
+  sunrise/sunset, and the shipped hour-by-hour lighting curve driving a
+  code-owned sun (which doubles as the moon on the night arc) + flat
+  ambient, eased ~2 s per hour mark. Elapsed game time persists (profile
+  v4) — unlike Roblox's reboot-to-day-one. ForceTime(hour) = debug jump.
+  Weather/wind/rain/lightning/season VISUALS are a later port.
+- **UI/SurvivalHud.cs** — the Roblox SurvivalHUD transcribed 1:1 from the
+  StarterGui.HUD.SurvivalHUD template: bottom-left 232×132 SurvivalBars
+  panel (HP / FOOD / H₂O / STA rows — 12px color chip, GothamBold tag,
+  13px bar with gloss strip, right value) + DateTimeFrame 232×24 above it
+  ("6:00 AM  |  Sep 1, 2026" from TimeService). SurvivalClient juice
+  ported: 0.35s quad fill tweens, <25% low-color swap, number
+  flash/pop/shake per displayed-int change, tip particle bursts (0.3s
+  throttle). Hides while Gameplay is blocked (the Roblox modal convention).
+  Replaced StatsScreen's interim bottom-center stamina bar.
+- **Ragdoll/** — the Roblox kinematic Verlet RagdollEngine ported (15
+  particles + Jakobsen sticks + fold-limit inequality sticks, swept
+  raycasts, RESTITUTION 0.05 / FRICTION 0.4, the drift-pump fix — collide
+  from v0, position-only cleanup pass — per-particle sleep JITTER_EPS 2.0,
+  sphere self-collide 0.7/0.5 + CAPSULE_COLLIDE segment pairs at half
+  strength (limbs never pass through flesh), core-down settle/freeze
+  rules, fixed 60 Hz WITH render interpolation between steps — and Muscle
+  stays 0 while down: any idle-pose tug reads as twitch) + ACTIVE-ragdoll
+  muscles: particles chase the live Animator pose ×Muscle (1 = animated,
+  0 = limp; the get-up IS the ramp). RagdollController drives bones in
+  world space post-animator, root follows hips (camera tracks the flop),
+  colliders/motor/gun disabled while down, slam damage (cap 40, 0.8 s cd)
+  + body-drop thud from ConsumeImpact. Triggers: sky-fall (≥3.5 st below
+  takeoff, mid-air), X debug shove (24 st/s at head height — the
+  zero-momentum statue fix), dummy deaths (launched along the killing
+  shot, StayDown till respawn). Deferred: death topple, trip-from-sprint,
+  alive-mode behaviors, corpse persistence.
 - **Core/WorldBuilder.cs + RuntimeBootstrap.cs** — the world is built from
   code. Pressing Play in any scene with no `[GAME]` root constructs the
   baseplate test world (ground, ramp, crates, wall, player, camera, save).
@@ -104,7 +205,8 @@ All tuned Roblox numbers convert studs→meters at the edge via
 
 WASD move · Shift sprint · Space jump · Ctrl crouch (Space stands up) ·
 E interact · Tab inventory (drag items, R rotates, right-click menu) ·
-RMB aim-strafe · Alt camera mode · Esc toggles cursor lock.
+T draw gun · LMB fire · R reload · RMB ADS (also aim-strafe) ·
+P stats panel · X debug ragdoll · Alt camera mode · Esc toggles cursor lock.
 
 ## Engine roadmap
 
