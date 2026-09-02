@@ -84,13 +84,79 @@ namespace Game.Combat
             BuildGunVisual();
         }
 
+        // Deagle model normalization (Shell9mm-style: measure, don't trust
+        // FBX units/axes). Longest mesh axis = barrel → local +Z, middle
+        // axis = slide/grip height → +Y, longest dimension scaled to a real
+        // Desert Eagle's 0.27 m. Grip fractions seat the trigger area at
+        // the HeldGun origin (where the old primitive grip sat), and the
+        // muzzle is derived from the actual scaled barrel tip.
+        const float DeagleLength = 0.27f;
+        const float GripUpFrac = 0.35f;     // grip point: this far up the body
+        const float GripFwdFrac = 0.28f;    // …and this far along the length
+
         void BuildGunVisual()
         {
             _gun = new GameObject("HeldGun");
             _gun.transform.SetParent(transform, false);
             var mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
             mat.SetColor("_BaseColor", new Color32(52, 52, 58, 255));
+            mat.SetFloat("_Metallic", 0.75f);
+            mat.SetFloat("_Smoothness", 0.6f);
 
+            var model = Resources.Load<GameObject>("Weapons/Deagle");
+            if (model != null) BuildDeagleVisual(model, mat);
+            else BuildPrimitiveVisual(mat);
+            _gun.SetActive(false);
+        }
+
+        void BuildDeagleVisual(GameObject model, Material mat)
+        {
+            var m = Instantiate(model, _gun.transform);
+            m.name = "Deagle";
+            m.transform.localPosition = Vector3.zero;
+            m.transform.localRotation = Quaternion.identity;
+            m.transform.localScale = Vector3.one;
+            foreach (var c in m.GetComponentsInChildren<Collider>(true)) Destroy(c);
+            foreach (var a in m.GetComponentsInChildren<Animator>(true)) Destroy(a);
+            foreach (var r in m.GetComponentsInChildren<Renderer>(true))
+            {
+                var mats = r.sharedMaterials;   // gunmetal everywhere — never
+                for (int i = 0; i < mats.Length; i++) mats[i] = mat;   // magenta
+                r.sharedMaterials = mats;
+            }
+
+            Bounds b = LocalMeshBounds(m.transform);
+            Vector3 sz = b.size;
+            Vector3 fwd, up;
+            if (sz.x >= sz.y && sz.x >= sz.z)
+            { fwd = Vector3.right; up = sz.y >= sz.z ? Vector3.up : Vector3.forward; }
+            else if (sz.y >= sz.x && sz.y >= sz.z)
+            { fwd = Vector3.up; up = sz.x >= sz.z ? Vector3.right : Vector3.forward; }
+            else
+            { fwd = Vector3.forward; up = sz.y >= sz.x ? Vector3.up : Vector3.right; }
+
+            Quaternion rot = Quaternion.Inverse(Quaternion.LookRotation(fwd, up));
+            float longest = Mathf.Max(sz.x, Mathf.Max(sz.y, sz.z));
+            float scale = DeagleLength / Mathf.Max(0.0001f, longest);
+            m.transform.localRotation = rot;
+            m.transform.localScale = Vector3.one * scale;
+
+            Bounds gb = TransformBounds(b, rot, scale);
+            Vector3 grip = new Vector3(gb.center.x,
+                gb.min.y + gb.size.y * GripUpFrac,
+                gb.min.z + gb.size.z * GripFwdFrac);
+            m.transform.localPosition = -grip;
+
+            _muzzle = new GameObject("Muzzle").transform;
+            _muzzle.SetParent(_gun.transform, false);
+            _muzzle.localPosition = new Vector3(0f,
+                gb.center.y - grip.y + gb.extents.y * 0.3f,
+                gb.max.z - grip.z - 0.005f);
+        }
+
+        // The original code-built stand-in — kept as the no-FBX fallback.
+        void BuildPrimitiveVisual(Material mat)
+        {
             var slide = GameObject.CreatePrimitive(PrimitiveType.Cube);
             Destroy(slide.GetComponent<Collider>());
             slide.name = "Slide";
@@ -111,8 +177,48 @@ namespace Game.Combat
             _muzzle = new GameObject("Muzzle").transform;
             _muzzle.SetParent(_gun.transform, false);
             _muzzle.localPosition = new Vector3(0f, 0.02f, 0.15f);
-            _gun.SetActive(false);
         }
+
+        // Mesh-data bounds in `root` space — works while inactive, immune
+        // to world pose, covers static and skinned meshes alike.
+        static Bounds LocalMeshBounds(Transform root)
+        {
+            bool has = false;
+            Bounds acc = default;
+            void Add(Mesh mesh, Transform t)
+            {
+                if (mesh == null) return;
+                Bounds mb = mesh.bounds;
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 c = mb.center + Vector3.Scale(mb.extents, Corner(i));
+                    Vector3 p = root.InverseTransformPoint(t.TransformPoint(c));
+                    if (!has) { acc = new Bounds(p, Vector3.zero); has = true; }
+                    else acc.Encapsulate(p);
+                }
+            }
+            foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
+                Add(mf.sharedMesh, mf.transform);
+            foreach (var sk in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                Add(sk.sharedMesh, sk.transform);
+            return acc;
+        }
+
+        static Bounds TransformBounds(Bounds b, Quaternion rot, float scale)
+        {
+            Bounds acc = default;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 c = b.center + Vector3.Scale(b.extents, Corner(i));
+                Vector3 p = rot * c * scale;
+                if (i == 0) acc = new Bounds(p, Vector3.zero);
+                else acc.Encapsulate(p);
+            }
+            return acc;
+        }
+
+        static Vector3 Corner(int i) => new Vector3(
+            (i & 1) == 0 ? -1f : 1f, (i & 2) == 0 ? -1f : 1f, (i & 4) == 0 ? -1f : 1f);
 
         // Ragdoll (or anything else) disabling us must holster cleanly.
         void OnDisable()

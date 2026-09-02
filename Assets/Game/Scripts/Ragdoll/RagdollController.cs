@@ -19,7 +19,10 @@
 //     height, 24 st/s along facing — lower speeds pendulum back upright).
 // The root follows the hips (camera tracks the flop); bones are written in
 // WORLD space after the root moves, parents before children.
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
 using Game.Audio;
 using Game.Combat;
 using Game.Core;
@@ -27,7 +30,7 @@ using Game.Movement;
 
 namespace Game.Ragdoll
 {
-    public enum RagdollState { None, Down, GetUp }
+    public enum RagdollState { None, Dying, Down, GetUp }
 
     public class RagdollController : MonoBehaviour
     {
@@ -37,7 +40,8 @@ namespace Game.Ragdoll
         const float SlamDamageCap = 40f;               // the shipped cap
         const float SlamDamageCooldown = 0.8f;
         const float GetUpTime = 0.9f;
-        const float GetUpConverged = 0.16f;
+        const float GetUpConverged = 0.22f;   // feet/arm equilibrium sits ~9 cm out
+        const float GetUpTimeout = 2.5f;      // the kinGetup guarantee: ALWAYS rise
         const float DebugShoveSpeed = 24f * 0.28f;     // 6.72 — the statue fix
 
         public RagdollState State { get; private set; }
@@ -53,6 +57,35 @@ namespace Game.Ragdoll
 
         float _acc;
         float _minDownT;
+        float _getUpT;
+        int[] _toppleFirm, _toppleSoft;   // brace index sets (set in Bind)
+
+        // ── Directional death animations (Mixamo pack) → ragdoll handoff ───
+        // Play the authored fall, then at DeathHandoffFrac of the clip seed
+        // the ragdoll from the ANIMATED pose + its per-bone velocities, so
+        // physics continues the exact fall the animation started.
+        const float DeathHandoffFrac = 0.55f;
+        const float DeathHandoffMax = 1.4f;
+        static readonly Dictionary<string, string[]> DeathPools =
+            new Dictionary<string, string[]>
+        {
+            ["backward"] = new[] { "standing death backward 01", "standing react death backward" },
+            ["forward"] = new[] { "standing death forward 01", "standing react death forward" },
+            ["left"] = new[] { "standing death left 01", "standing react death left" },
+            ["right"] = new[] { "standing react death right" },
+        };
+        static readonly Dictionary<string, AnimationClip> _deathClips =
+            new Dictionary<string, AnimationClip>();
+
+        PlayableGraph _deathGraph;
+        float _deathT, _deathHandoffAt;
+        Vector3 _deathPoint, _deathDir;
+        float _deathSpeed;
+        Vector3[] _dyingPrev;
+        float _dyingPrevDt;
+        bool _dyingPrevValid;
+        Vector3 _lastHitPoint;
+        Vector3 _lastHitDir = Vector3.forward;
         bool _stayDown;
         float _nextSlamDmg;
         bool _wasAirborne;
@@ -78,7 +111,27 @@ namespace Game.Ragdoll
             _cc = GetComponent<CharacterController>();
             _health = GetComponent<Health>();
             _gun = GetComponent<GunController>();
+            EventBus.Subscribe<EntityDamaged>(OnDamagedSelf);
+            if (_health != null) _health.Died += OnOwnDeath;
         }
+
+        void OnDestroy()
+        {
+            EventBus.Unsubscribe<EntityDamaged>(OnDamagedSelf);
+            if (_health != null) _health.Died -= OnOwnDeath;
+            if (_deathGraph.IsValid()) _deathGraph.Destroy();
+        }
+
+        // Remember the killing shot so the death picks its direction.
+        void OnDamagedSelf(EntityDamaged e)
+        {
+            if (e.Target != gameObject) return;
+            _lastHitPoint = e.Point;
+            Vector3 to = transform.position + Vector3.up * 1.2f - e.Point;
+            if (to.sqrMagnitude > 0.01f) _lastHitDir = to.normalized;
+        }
+
+        void OnOwnDeath(Health h) => PlayDeath(_lastHitPoint, _lastHitDir, 8f);
 
         // ── Binding ────────────────────────────────────────────────────────
         bool Bind()
@@ -150,6 +203,11 @@ namespace Game.Ragdoll
             AddDrive(B(HumanBodyBones.RightUpperLeg), pULR, pLLR);
             AddDrive(B(HumanBodyBones.RightLowerLeg), pLLR, pFootR);
 
+            // Topple brace sets: spine/neck firm, thighs+knees at half give —
+            // the falling-tree phase holds this shape until the torso lands.
+            _toppleFirm = new[] { pHips, pChest, pHead };
+            _toppleSoft = new[] { pULL, pULR, pLLL, pLLR };
+
             _bound = true;
             return true;
         }
@@ -185,22 +243,131 @@ namespace Game.Ragdoll
             }
             EnterDown(minDown, stayDown, _cc != null && _cc.enabled ? _cc.velocity : Vector3.zero);
             _engine.ApplyImpulse(point, dir, speed);
+            _engine.BeginTopple(dir, _toppleFirm, _toppleSoft);   // fall the lean way
         }
 
         public void TripKnockdown(float minDown = 1.2f)
         {
             if (!Bind() || State != RagdollState.None) return;
-            EnterDown(minDown, false, _cc != null && _cc.enabled ? _cc.velocity : Vector3.zero);
+            Vector3 vel = _cc != null && _cc.enabled ? _cc.velocity : Vector3.zero;
+            EnterDown(minDown, false, vel);
             _engine.BrakeFeet();
+            Vector3 lean = new Vector3(vel.x, 0f, vel.z);
+            _engine.BeginTopple(lean.sqrMagnitude > 0.01f ? lean : transform.forward,
+                _toppleFirm, _toppleSoft);
         }
 
         public void RestoreInstant()
         {
             if (State == RagdollState.None) return;
+            if (_deathGraph.IsValid()) _deathGraph.Destroy();
             State = RagdollState.None;
             _engine.Muscle = 0f;
             SetColliders(true);
             SetControl(true);
+        }
+
+        // ── Directional authored death → seamless ragdoll handoff ──────────
+        public void PlayDeath(Vector3 point, Vector3 dir, float speed)
+        {
+            if (State == RagdollState.Down || State == RagdollState.GetUp)
+            {
+                // Died while already ragdolled (slam kill mid-flop): the
+                // flop becomes the corpse — no clip, just stay down.
+                State = RagdollState.Down;
+                _stayDown = true;
+                _engine.Muscle = 0f;
+                _engine.ApplyImpulse(point, dir, speed);
+                return;
+            }
+            if (State == RagdollState.Dying) return;
+
+            var clip = Bind() ? LoadDeathClip(LocalDeathDir(dir)) : null;
+            if (clip == null || _anim == null)
+            {
+                Knockdown(point, dir, speed, 999f, stayDown: true);   // no clip: flop
+                return;
+            }
+
+            AnimationPlayableUtilities.PlayClip(_anim, clip, out _deathGraph);
+            State = RagdollState.Dying;
+            _deathT = 0f;
+            _deathHandoffAt = Mathf.Min(clip.length * DeathHandoffFrac, DeathHandoffMax);
+            _deathPoint = point;
+            _deathDir = dir;
+            _deathSpeed = speed;
+            _dyingPrevValid = false;
+            SetControl(false);
+        }
+
+        // Push direction in body space picks the fall: pushed backward =
+        // "Standing Death Backward", etc. Right has only the react clip.
+        string LocalDeathDir(Vector3 dir)
+        {
+            Vector3 local = transform.InverseTransformDirection(
+                dir.sqrMagnitude > 0.001f ? dir.normalized : -transform.forward);
+            if (Mathf.Abs(local.z) >= Mathf.Abs(local.x))
+                return local.z <= 0f ? "backward" : "forward";
+            return local.x < 0f ? "left" : "right";
+        }
+
+        static AnimationClip LoadDeathClip(string direction)
+        {
+            var pool = DeathPools[direction];
+            string name = pool[Random.Range(0, pool.Length)];
+            if (_deathClips.TryGetValue(name, out var cached) && cached != null)
+                return cached;
+            foreach (var c in Resources.LoadAll<AnimationClip>("Locomotion/Deaths/" + name))
+                if (!c.name.StartsWith("__preview"))
+                {
+                    _deathClips[name] = c;
+                    return c;
+                }
+            return null;
+        }
+
+        void TickDying()
+        {
+            float dt = Time.deltaTime;
+            _deathT += dt;
+            if (_deathT >= _deathHandoffAt)
+            {
+                HandoffToRagdoll();
+                return;
+            }
+            // Track bone positions so the handoff carries the fall's motion.
+            if (_dyingPrev == null || _dyingPrev.Length != _engine.Particles.Count)
+                _dyingPrev = new Vector3[_engine.Particles.Count];
+            for (int i = 0; i < _engine.Particles.Count; i++)
+            {
+                var b = _engine.Particles[i].Bone;
+                _dyingPrev[i] = b != null ? b.position : _dyingPrev[i];
+            }
+            _dyingPrevDt = Mathf.Max(dt, 0.0001f);
+            _dyingPrevValid = true;
+        }
+
+        void HandoffToRagdoll()
+        {
+            if (_deathGraph.IsValid()) _deathGraph.Destroy();
+            // Bones hold the mid-fall death pose right now: the sim seeds
+            // from it, and each particle inherits the animation's velocity.
+            EnterDown(1.2f, stayDown: true, rootVel: Vector3.zero);
+            if (_dyingPrevValid)
+            {
+                for (int i = 0; i < _engine.Particles.Count; i++)
+                {
+                    var p = _engine.Particles[i];
+                    if (p.Bone == null) continue;
+                    Vector3 v = (p.Pos - _dyingPrev[i]) / _dyingPrevDt;
+                    v = Vector3.ClampMagnitude(v, 8f);
+                    p.Prev = p.Pos - v * RagdollEngine.FixedStep;
+                }
+            }
+            _engine.ApplyImpulse(_deathPoint, _deathDir, _deathSpeed);
+            // Continue the authored fall as one piece — braced from the
+            // mid-fall pose, committed to the death direction.
+            _engine.BeginTopple(_deathDir, _toppleFirm, _toppleSoft);
         }
 
         void EnterDown(float minDown, bool stayDown, Vector3 rootVel)
@@ -260,6 +427,7 @@ namespace Game.Ragdoll
         void LateUpdate()
         {
             if (State == RagdollState.None) return;
+            if (State == RagdollState.Dying) { TickDying(); return; }
 
             // Bones hold the FRESH animated pose right now — sample muscle
             // targets from it, then overwrite with the sim.
@@ -306,18 +474,31 @@ namespace Game.Ragdoll
             switch (State)
             {
                 case RagdollState.Down:
+                    // A StayDown corpse whose Health was reset has respawned —
+                    // stand it back up wherever its owner repositioned it.
+                    if (_stayDown && _health != null && !_health.IsDead)
+                    {
+                        RestoreInstant();
+                        break;
+                    }
                     _minDownT -= Time.deltaTime;
                     if (!_stayDown && _minDownT <= 0f
                         && (_engine.Settled || _engine.Age > 4f))
                     {
                         State = RagdollState.GetUp;
+                        _getUpT = 0f;
                         _engine.WakeUp();
                     }
                     break;
                 case RagdollState.GetUp:
+                    _getUpT += Time.deltaTime;
+                    if (_engine.Settled) _engine.WakeUp();   // never freeze mid-rise
                     _engine.Muscle = Mathf.MoveTowards(_engine.Muscle, 1f,
                         Time.deltaTime / GetUpTime);
-                    if (_engine.Muscle >= 1f && _engine.AvgTargetDistance() < GetUpConverged)
+                    // Converged — or the kinGetup guarantee: stamp and stand
+                    // regardless, the Animator snaps the last few centimetres.
+                    if ((_engine.Muscle >= 1f && _engine.AvgTargetDistance() < GetUpConverged)
+                        || _getUpT >= GetUpTimeout)
                         Restore();
                     break;
             }

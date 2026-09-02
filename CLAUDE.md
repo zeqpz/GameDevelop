@@ -171,11 +171,46 @@ All tuned Roblox numbers convert studs→meters at the edge via
   0 = limp; the get-up IS the ramp). RagdollController drives bones in
   world space post-animator, root follows hips (camera tracks the flop),
   colliders/motor/gun disabled while down, slam damage (cap 40, 0.8 s cd)
-  + body-drop thud from ConsumeImpact. Triggers: sky-fall (≥3.5 st below
+  + body-drop thud from ConsumeImpact. TOPPLE (falling-tree phase, pass 3):
+  every knockdown/trip/death-handoff calls BeginTopple — temporary brace
+  sticks freeze the knockdown-moment shape (hips/chest/head firm ×1,
+  thighs+knees ×0.5, pairs already stick-linked skipped; BraceStiff 0.5/it)
+  so the body tips as ONE piece instead of folding at the waist; a lean
+  assist (3 m/s² × height-fraction, direction = core-vs-grounded-support
+  measured live, fallback = push dir, skipped airborne) commits the fall
+  toward the actual lean; feet grip at ToppleFriction 0.85 (vs 0.4) so
+  they pivot, never slide out. Core touchdown ends the phase — braces
+  fade over 0.25 s to the tuned limp settle. WakeUp/SnapToBones clear
+  braces (get-up never fights them). Triggers: sky-fall (≥3.5 st below
   takeoff, mid-air), X debug shove (24 st/s at head height — the
-  zero-momentum statue fix), dummy deaths (launched along the killing
-  shot, StayDown till respawn). Deferred: death topple, trip-from-sprint,
-  alive-mode behaviors, corpse persistence.
+  zero-momentum statue fix), and DEATH — RagdollController owns death for
+  every rig (subscribes its own Health.Died + EntityDamaged for hit
+  tracking): picks a directional Mixamo death by push direction in body
+  space (Resources/Locomotion/Deaths: full falls B/F/L + react deaths
+  B/F/L/R, random within pool), plays it via a Playables overlay
+  (AnimationPlayableUtilities.PlayClip — no controller states), then at
+  55% of the clip (cap 1.4 s) hands the ANIMATED pose to the Verlet sim
+  with per-bone velocities captured frame-to-frame (Prev = Pos − v·dt), so
+  physics continues the authored fall seamlessly; StayDown corpse until
+  its owner resets Health (the Down branch sees !IsDead → RestoreInstant).
+  DamageableDummy therefore only times respawn (teleport + ResetHealth);
+  StatsService delays player respawn 4 s so the death reads. Deferred:
+  trip-from-sprint, alive-mode behaviors, corpse persistence.
+- **Chat/** — ChatService (the command pipeline: /me /shout /whisper /ooc,
+  /stats routes OpenStatsRequested, unknown "/" → SYS nudge; ranges IC 20 /
+  SHOUT 30 / WHISPER 8 st carried for multiplayer; 0.5 s cooldown; join
+  lines ride ALERT via the ChatReady flush) + UI/ChatScreen — the ChatGui
+  transcribed (480×222 at (10,10), 188 msg area alpha 0→0.45 over 0.35 /
+  fade 1.5, 20 px rich rows cap 50, InputBar with the dynamic-width gold
+  mode tag + HAND-ROLLED text field on InputService.TextInput — chat IS
+  the typing-gate customer: Gameplay map blocks while open). Effects
+  verbatim: row pop-in +14 px/0.18 s Back (position-only), /shout rattle
+  ±3 px/0.5 s, 24 px top-edge dissolve, per-row CanvasGroup opacity;
+  bubble = white 50% box over the head, pops 0.55→1/0.22 s, hover-bobs
+  sin(t·2.2)·0.12 st, /shout wobbles ±4°, ". . ." typing cycle with
+  message-wins rules. COL table verbatim (IC gold/white · OOC green ·
+  ME/ALERT purple · SHOUT yellow · WHISPER gray-blue · SYS blue). "/" or
+  Enter opens, Enter sends, Esc cancels; /help is client-side.
 - **Core/WorldBuilder.cs + RuntimeBootstrap.cs** — the world is built from
   code. Pressing Play in any scene with no `[GAME]` root constructs the
   baseplate test world (ground, ramp, crates, wall, player, camera, save).
@@ -206,7 +241,8 @@ All tuned Roblox numbers convert studs→meters at the edge via
 WASD move · Shift sprint · Space jump · Ctrl crouch (Space stands up) ·
 E interact · Tab inventory (drag items, R rotates, right-click menu) ·
 T draw gun · LMB fire · R reload · RMB ADS (also aim-strafe) ·
-P stats panel · X debug ragdoll · Alt camera mode · Esc toggles cursor lock.
+P stats panel · X debug ragdoll · "/" or Enter chat (/me /shout /whisper
+/ooc /stats /help) · Alt camera mode · Esc toggles cursor lock.
 
 ## Engine roadmap
 

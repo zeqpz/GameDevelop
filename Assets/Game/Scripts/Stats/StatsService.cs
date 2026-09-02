@@ -62,6 +62,7 @@ namespace Game.Stats
         float _regenWait;
         float _survivalTickT;      // 1 Hz starvation cadence (SURVIVAL_TICK)
         bool _respawnQueued;
+        float _respawnDelayT;      // let the death anim + ragdoll play out
         Vector3 _spawnPos;
         PlayerMotor _motor;
         Health _playerHealth;
@@ -88,7 +89,11 @@ namespace Game.Stats
                 AddReputation(1f);
         }
 
-        void OnPlayerDied(Health h) => _respawnQueued = true;
+        void OnPlayerDied(Health h)
+        {
+            _respawnQueued = true;
+            _respawnDelayT = 4f;   // RagdollController plays death → corpse
+        }
 
         public void AddReputation(float delta) =>
             Reputation = Mathf.Clamp(Reputation + delta, 0f, MaxSkill);
@@ -159,9 +164,13 @@ namespace Game.Stats
             }
 
             // Death → respawn at the spawn point with ALL survival stats
-            // reset to max (the Roblox CharacterAdded reset).
+            // reset to max (the Roblox CharacterAdded reset). Delayed a few
+            // seconds so the directional death + ragdoll corpse reads first;
+            // ResetHealth is what stands the ragdoll back up.
             if (_respawnQueued)
             {
+                _respawnDelayT -= dt;
+                if (_respawnDelayT > 0f) return;
                 _respawnQueued = false;
                 Hunger = 100f;
                 Thirst = 100f;

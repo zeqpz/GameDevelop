@@ -56,6 +56,20 @@ namespace Game.Ragdoll
         // Knockdown impulses arrive 80% weaker (user tune) — one choke point
         // so every source (shots, falls, X debug) scales together.
         public const float ImpulseScale = 0.2f;
+        // ── TOPPLE: the falling-tree phase (smoothness pass 3) ─────────────
+        // A body going limp the instant it's hit crumples straight down —
+        // spine folds, knees buckle, no direction. Real falls pivot: the
+        // body stays semi-rigid, tips over its feet in the direction it
+        // leans, and only goes limp when the torso lands. Temporary BRACE
+        // sticks hold the knockdown-moment shape (spine firm, legs at half
+        // give), a gentle lean assist commits the fall toward wherever the
+        // body is actually tipping, and feet grip hard so they pivot
+        // instead of sliding out. All of it fades over BRACE_FADE once the
+        // core touches down — the tuned limp settle takes over from there.
+        const float BraceFade = 0.25f;
+        const float LeanAssistAccel = 3.0f;
+        const float ToppleFriction = 0.85f;
+        const float BraceStiff = 0.5f;
 
         public class Particle
         {
@@ -70,11 +84,16 @@ namespace Game.Ragdoll
 
         class Stick { public int A, B; public float Len; public bool MinOnly; public bool Body; }
         class CapsulePair { public int A1, A2, B1, B2; public float RSum; }
+        class Brace { public int A, B; public float Len; public float Stiff; }
 
         public readonly List<Particle> Particles = new List<Particle>();
         readonly List<Stick> _sticks = new List<Stick>();
         readonly List<(int a, int b, float min)> _selfPairs = new List<(int, int, float)>();
         readonly List<CapsulePair> _capsulePairs = new List<CapsulePair>();
+        readonly List<Brace> _braces = new List<Brace>();
+        float _braceStrength;
+        bool _toppling;
+        Vector3 _leanFallback = Vector3.forward;
 
         public float Muscle;             // 0 limp … 1 follows the animation
         public bool Settled { get; private set; }
@@ -182,6 +201,45 @@ namespace Game.Ragdoll
             _settleClock = 0f;
             Settled = false;
             _maxImpact = 0f;
+            _braces.Clear();
+            _braceStrength = 0f;
+            _toppling = false;
+        }
+
+        // Freeze the CURRENT shape into temporary braces and start the
+        // falling-tree phase. firm pairs (spine/neck) hold at full brace
+        // stiffness; anything touching soft (legs) gets half — a little
+        // knee give. Pairs already held by an equality stick are skipped.
+        public void BeginTopple(Vector3 fallbackDir, int[] firm, int[] soft)
+        {
+            _braces.Clear();
+            var linked = new HashSet<(int, int)>();
+            foreach (var s in _sticks)
+                if (!s.MinOnly)
+                {
+                    linked.Add((s.A, s.B));
+                    linked.Add((s.B, s.A));
+                }
+            int nf = firm.Length;
+            int[] all = new int[nf + soft.Length];
+            firm.CopyTo(all, 0);
+            soft.CopyTo(all, nf);
+            for (int i = 0; i < all.Length; i++)
+                for (int j = i + 1; j < all.Length; j++)
+                {
+                    if (linked.Contains((all[i], all[j]))) continue;
+                    _braces.Add(new Brace
+                    {
+                        A = all[i],
+                        B = all[j],
+                        Len = Vector3.Distance(Particles[all[i]].Pos, Particles[all[j]].Pos),
+                        Stiff = (i < nf && j < nf) ? 1f : 0.5f,
+                    });
+                }
+            fallbackDir.y = 0f;
+            if (fallbackDir.sqrMagnitude > 0.001f) _leanFallback = fallbackDir.normalized;
+            _braceStrength = 1f;
+            _toppling = true;
         }
 
         // applyImpulse: contact falloff + up-bias. Hit legs → the body flips.
@@ -242,6 +300,38 @@ namespace Game.Ragdoll
             }
             avgSpeed /= Mathf.Max(1, Particles.Count);
 
+            // ── Lean assist (topple phase only): the body commits to the
+            // direction it is ACTUALLY tipping — measured core-vs-support
+            // each step, fallback = the knockdown push. Applied strongest
+            // at the top of the body (a lever over the feet), zero at the
+            // pivot, so it reads as falling weight, never a shove. Skipped
+            // airborne (n == 0): gravity owns a sky fall.
+            if (_toppling && _braceStrength > 0f)
+            {
+                Vector3 support = Vector3.zero, com = Vector3.zero;
+                int nSup = 0, nCore = 0;
+                float minY = float.MaxValue, maxY = float.MinValue;
+                foreach (var p in Particles)
+                {
+                    minY = Mathf.Min(minY, p.Pos.y);
+                    maxY = Mathf.Max(maxY, p.Pos.y);
+                    if (p.Grounded) { support += p.Pos; nSup++; }
+                    if (p.Core) { com += p.Pos; nCore++; }
+                }
+                float span = maxY - minY;
+                if (nSup > 0 && nCore > 0 && span > 0.3f)
+                {
+                    Vector3 lean = com / nCore - support / nSup;
+                    lean.y = 0f;
+                    Vector3 dir = lean.magnitude > 0.02f ? lean.normalized : _leanFallback;
+                    foreach (var p in Particles)
+                    {
+                        float hf = (p.Pos.y - minY) / span;
+                        p.Pos += dir * (LeanAssistAccel * hf * dt * dt);
+                    }
+                }
+            }
+
             // ── Muscles: chase the animated pose (moves pos AND prev so the
             // pull adds position, not much velocity — limp stays limp) ──────
             if (Muscle > 0.001f)
@@ -271,6 +361,21 @@ namespace Game.Ragdoll
                     a.Pos += corr;
                     b.Pos -= corr;
                 }
+                // Topple braces: soft equality springs holding the knockdown
+                // shape — the body tips as one piece instead of folding.
+                if (_braceStrength > 0f)
+                    foreach (var br in _braces)
+                    {
+                        var a = Particles[br.A];
+                        var b = Particles[br.B];
+                        Vector3 d = b.Pos - a.Pos;
+                        float len = d.magnitude;
+                        if (len < 0.0001f) continue;
+                        Vector3 corr = d * (0.5f * (len - br.Len) / len)
+                            * (BraceStiff * br.Stiff * _braceStrength);
+                        a.Pos += corr;
+                        b.Pos -= corr;
+                    }
                 foreach (var (ia, ib, min) in _selfPairs)
                 {
                     var a = Particles[ia];
@@ -334,7 +439,11 @@ namespace Game.Ragdoll
                     }
                     Vector3 vNorm = hit.normal * vN;
                     Vector3 vTan = p.V0 - vNorm;
-                    Vector3 v = vTan * (1f - GroundFriction) - vNorm * Restitution;
+                    // Topple phase: feet grip so the body PIVOTS over them —
+                    // sliding support is exactly what turns a fall into a
+                    // straight-down crumple.
+                    float friction = _toppling ? ToppleFriction : GroundFriction;
+                    Vector3 v = vTan * (1f - friction) - vNorm * Restitution;
                     if (p.Grounded && v.magnitude < JitterEps) v = Vector3.zero;  // sleep
                     p.Prev = p.Pos - v * dt;
                 }
@@ -374,6 +483,16 @@ namespace Game.Ragdoll
             if (coreDown && avgMotion < JitterEps)
                 foreach (var p in Particles) p.Prev = p.Pos;
 
+            // ── Topple lifecycle: torso landing ends the falling-tree phase;
+            // braces fade out over BRACE_FADE (limp on impact, not board-
+            // stiff bounce) and the tuned settle owns everything after.
+            if (_toppling && coreDown) _toppling = false;
+            if (!_toppling && _braceStrength > 0f)
+            {
+                _braceStrength = Mathf.MoveTowards(_braceStrength, 0f, dt / BraceFade);
+                if (_braceStrength <= 0f) _braces.Clear();
+            }
+
             // ── Settle / freeze (CORE contact required — never lock
             // standing; skipped while muscles are actively getting up).
             // Fast path: a near-still grounded body locks in ~0.5 s (the
@@ -388,7 +507,10 @@ namespace Game.Ragdoll
             {
                 _settleClock = 0f;
             }
-            if (_settleClock >= SettleTime || (Age >= ForceFreezeAfter && coreDown))
+            // Neither freeze path may fire while muscles are actively rising —
+            // a mid-get-up freeze stops the sim and strands the body forever.
+            if (Muscle < 0.15f
+                && (_settleClock >= SettleTime || (Age >= ForceFreezeAfter && coreDown)))
             {
                 Settled = true;
                 foreach (var p in Particles) p.Prev = p.Pos;   // no junk on WakeUp
@@ -450,6 +572,10 @@ namespace Game.Ragdoll
             Settled = false;
             _settleClock = 0f;
             Age = Mathf.Min(Age, FreezeMinTime);
+            // Get-up muscles must never wrestle leftover braces.
+            _braces.Clear();
+            _braceStrength = 0f;
+            _toppling = false;
         }
     }
 }

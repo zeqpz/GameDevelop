@@ -21,7 +21,13 @@ namespace Game.Core
         readonly InputActionMap _ui = new InputActionMap("Ui");
         readonly InputAction _move, _look, _sprint, _jump, _crouch, _aim,
             _interact, _cameraMode, _escape, _fire, _ready, _reload, _ragTest;
-        readonly InputAction _uiPoint, _uiClick, _uiRight, _uiRotate, _uiInventory, _uiStats;
+        readonly InputAction _uiPoint, _uiClick, _uiRight, _uiRotate, _uiInventory, _uiStats,
+            _uiChatSlash, _uiChatReturn, _uiBackspace;
+        System.Action<char> _textInputHandler;
+
+        // Raw character stream for the hand-rolled chat box (fires for every
+        // keystroke that produces text; ChatScreen consumes only while open).
+        public event System.Action<char> TextInput;
 
         public bool GameplayBlocked { get; private set; }
 
@@ -49,6 +55,14 @@ namespace Game.Core
             _uiRotate = _ui.AddAction("Rotate", InputActionType.Button, "<Keyboard>/r");
             _uiInventory = _ui.AddAction("Inventory", InputActionType.Button, "<Keyboard>/tab");
             _uiStats = _ui.AddAction("Stats", InputActionType.Button, "<Keyboard>/p");
+            _uiChatSlash = _ui.AddAction("ChatSlash", InputActionType.Button, "<Keyboard>/slash");
+            _uiChatReturn = _ui.AddAction("ChatReturn", InputActionType.Button, "<Keyboard>/enter");
+            _uiBackspace = _ui.AddAction("Backspace", InputActionType.Button, "<Keyboard>/backspace");
+            if (Keyboard.current != null)
+            {
+                _textInputHandler = c => TextInput?.Invoke(c);
+                Keyboard.current.onTextInput += _textInputHandler;
+            }
             _gameplay.Enable();
             _system.Enable();
             _ui.Enable();
@@ -77,6 +91,10 @@ namespace Game.Core
         public bool UiRotatePressed => _uiRotate.WasPressedThisFrame();
         public bool InventoryTogglePressed => _uiInventory.WasPressedThisFrame();
         public bool StatsTogglePressed => _uiStats.WasPressedThisFrame();
+        public bool ChatSlashPressed => _uiChatSlash.WasPressedThisFrame();
+        public bool ChatReturnPressed => _uiChatReturn.WasPressedThisFrame();
+        public bool BackspacePressed => _uiBackspace.WasPressedThisFrame();
+        public bool BackspaceHeld => _uiBackspace.IsPressed();
 
         // The typing gate: UI/chat blocks gameplay wholesale, escape survives.
         public void SetGameplayBlocked(bool blocked)
@@ -88,6 +106,8 @@ namespace Game.Core
 
         public void Dispose()
         {
+            if (_textInputHandler != null && Keyboard.current != null)
+                Keyboard.current.onTextInput -= _textInputHandler;
             _gameplay.Dispose();
             _system.Dispose();
             _ui.Dispose();

@@ -1,7 +1,10 @@
 // DamageableDummy — a shooting-range target: X Bot visual on the idle
 // controller, trigger hitboxes on the humanoid bones (spheres + boxes, the
 // explicit-hitbox policy), a non-trigger capsule so it blocks movement and
-// camera, Health 100. Death tips it over; it stands back up 3 s later.
+// camera, Health 100. Death plays out entirely through RagdollController
+// (directional death anim → ragdoll corpse via its own Health.Died hook);
+// this class only times the respawn: teleport home + ResetHealth, which is
+// what stands the corpse back up.
 using UnityEngine;
 using Game.Core;
 using Game.Ragdoll;
@@ -13,9 +16,6 @@ namespace Game.Combat
         Health _health;
         Animator _anim;
         GameObject _visual;
-        RagdollController _ragdoll;
-        Vector3 _lastHitPoint;
-        Vector3 _lastHitDir = Vector3.forward;
         Vector3 _spawnPos;
         Quaternion _spawnRot;
         bool _dead;
@@ -33,8 +33,7 @@ namespace Game.Combat
         {
             _health = gameObject.AddComponent<Health>();
             _health.Died += _ => OnDied();
-            _ragdoll = gameObject.AddComponent<RagdollController>();
-            EventBus.Subscribe<EntityDamaged>(OnDamaged);
+            gameObject.AddComponent<RagdollController>();   // owns the death
             _spawnPos = transform.position;
             _spawnRot = transform.rotation;
 
@@ -138,24 +137,12 @@ namespace Game.Combat
             hb.health = _health;
         }
 
-        void OnDestroy() => EventBus.Unsubscribe<EntityDamaged>(OnDamaged);
-
-        // Remember the killing shot so the death ragdoll launches with it.
-        void OnDamaged(EntityDamaged e)
-        {
-            if (e.Target != gameObject) return;
-            _lastHitPoint = e.Point;
-            Vector3 to = transform.position + Vector3.up * 1.2f - e.Point;
-            if (to.sqrMagnitude > 0.01f) _lastHitDir = to.normalized;
-        }
-
         void OnDied()
         {
+            // RagdollController heard the same Died event and is already
+            // playing the directional death → corpse; we just time respawn.
             _dead = true;
             _respawnT = 4f;
-            // Real death flop: the Verlet ragdoll takes over, launched along
-            // the killing shot; StayDown until respawn stands it back up.
-            _ragdoll.Knockdown(_lastHitPoint, _lastHitDir, 8f, 999f, stayDown: true);
         }
 
         void Update()
@@ -165,9 +152,8 @@ namespace Game.Combat
             if (_respawnT <= 0f)
             {
                 _dead = false;
-                _ragdoll.RestoreInstant();
                 transform.SetPositionAndRotation(_spawnPos, _spawnRot);
-                _health.ResetHealth();
+                _health.ResetHealth();   // ragdoll sees this and stands up
             }
         }
     }

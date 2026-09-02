@@ -7,6 +7,7 @@
 // on SurvivalHud's STA row (which replaced this screen's interim bar).
 using UnityEngine;
 using UnityEngine.UI;
+using Game.Chat;
 using Game.Core;
 using Game.Data;
 using Game.Stats;
@@ -42,6 +43,17 @@ namespace Game.UI
         void Start()
         {
             BuildPanel();
+            EventBus.Subscribe<OpenStatsRequested>(OnOpenStats);   // the /stats command
+        }
+
+        void OnDestroy() => EventBus.Unsubscribe<OpenStatsRequested>(OnOpenStats);
+
+        void OnOpenStats(OpenStatsRequested e) => Toggle();
+
+        public void Toggle()
+        {
+            if (_open) Close();
+            else if (_input != null && !_input.GameplayBlocked) Open();
         }
 
         void BuildPanel()

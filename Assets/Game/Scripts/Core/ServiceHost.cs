@@ -5,6 +5,7 @@
 // services down with it. Add new services here and nowhere else.
 using UnityEngine;
 using Game.Audio;
+using Game.Chat;
 using Game.Interaction;
 using Game.Inventory;
 using Game.Stats;
@@ -33,6 +34,7 @@ namespace Game.Core
             _inventory = Services.Register(new InventoryService());
             _stats = Services.Register(new StatsService());
             _time = Services.Register(new TimeService(transform));   // world clock + day/night
+            Services.Register(new ChatService());                    // commands + alerts
             EventBus.Subscribe<InteractionPerformed>(LogInteraction);
 
             var invScreen = new GameObject("InventoryScreen");
@@ -46,6 +48,10 @@ namespace Game.Core
             var survivalHud = new GameObject("SurvivalHud");
             survivalHud.transform.SetParent(transform, false);
             survivalHud.AddComponent<SurvivalHud>();     // vitals bars + game clock
+
+            var chatScreen = new GameObject("ChatScreen");
+            chatScreen.transform.SetParent(transform, false);
+            chatScreen.AddComponent<ChatScreen>();       // "/" or Enter — the chat
         }
 
         void Update()
