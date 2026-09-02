@@ -30,3 +30,6 @@ crashlytics-build.properties
 
 # IDE solution formats
 *.slnx
+
+# Unity crash-recovery scene backups
+[_]Recovery/
